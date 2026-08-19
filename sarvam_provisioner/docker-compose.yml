@@ -1,0 +1,16 @@
+services:
+  sarvam-provisioner:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: meetlog-sarvam-provisioner
+    restart: unless-stopped
+    ports:
+      - "8000:8000"
+    environment:
+      - PORT=8000
+      - PYTHONUNBUFFERED=1
+      - DATABASE_URL=postgresql://neondb_owner:npg_uZe6jm9brCDi@ep-wandering-firefly-atnelp6t-pooler.c-9.us-east-1.aws.neon.tech/neondb?sslmode=require&channel_binding=require
+      - BOOMLIFY_API_KEY=api_f3b8c315c649d7a8ece99a8460dddbfe1585a0f70ec5efad1424a20f2bcec445
+      - SARVAM_DEFAULT_PASSWORD=MeetLog2026!@#
+      - HEADLESS=true

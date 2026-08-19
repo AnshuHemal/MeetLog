@@ -1,0 +1,85 @@
+# ─── Dependencies ─────────────────────────────────────────────────────────────
+node_modules/
+/.pnp
+.pnp.js
+.yarn/install-state.gz
+
+# ─── Python Virtual Environments & Bytecode ─────────────────────────────────
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+env/
+venv/
+.venv/
+ENV/
+env.bak/
+venv.bak/
+*.egg-info/
+.installed.cfg
+*.egg
+
+# ─── Production Builds & Next.js Cache ──────────────────────────────────────
+.next/
+out/
+build/
+dist/
+*.tsbuildinfo
+
+# ─── Environment Variables & Secrets (CRITICAL) ──────────────────────────────
+.env
+.env*.local
+.env.development
+.env.test
+.env.production
+sarvam_provisioner/.env
+
+# Exceptions: Allow tracking template/example files
+!.env.example
+!sarvam_provisioner/.env.example
+
+# ─── Logs & Diagnostics ──────────────────────────────────────────────────────
+logs/
+*.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+lerna-debug.log*
+sarvam_provisioner/logs/
+status-debug.log
+
+# ─── Testing & Browser Automation Artifacts ──────────────────────────────────
+coverage/
+.nyc_output/
+playwright-report/
+blob-report/
+test-results/
+playwright/.cache/
+
+# ─── Scratch & Temporary Working Directories ─────────────────────────────────
+scratch/
+tmp/
+temp/
+
+# ─── Operating System & IDE Specific Files ───────────────────────────────────
+.DS_Store
+.DS_Store?
+._*
+.Spotlight-V100
+.Trashes
+ehthumbs.db
+Thumbs.db
+Desktop.ini
+
+# IDEs & Editors
+.idea/
+.vscode/*
+!.vscode/extensions.json
+!.vscode/settings.json
+*.sublime-workspace
+*.sublime-project
+*.swp
+*.swo
+*~

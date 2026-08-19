@@ -1,0 +1,38 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" fill="none">
+  <defs>
+    <linearGradient id="meetlogBg" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#4F46E5" />
+      <stop offset="50%" stop-color="#2563EB" />
+      <stop offset="100%" stop-color="#06B6D4" />
+    </linearGradient>
+    <linearGradient id="waveGrad" x1="0%" y1="100%" x2="0%" y2="0%">
+      <stop offset="0%" stop-color="#FFFFFF" stop-opacity="0.9" />
+      <stop offset="100%" stop-color="#FFFFFF" />
+    </linearGradient>
+    <filter id="shadow" x="-10%" y="-10%" width="120%" height="120%">
+      <feDropShadow dx="0" dy="12" stdDeviation="20" flood-color="#1E1B4B" flood-opacity="0.3" />
+    </filter>
+  </defs>
+
+  <!-- High-contrast squircle container -->
+  <rect x="24" y="24" width="464" height="464" rx="120" fill="url(#meetlogBg)" filter="url(#shadow)" />
+  <rect x="24" y="24" width="464" height="464" rx="120" stroke="#FFFFFF" stroke-opacity="0.22" stroke-width="8" />
+
+  <!-- Multi-bar Speech & Transcription Soundwaves -->
+  <g>
+    <!-- Bar 1 (Left) -->
+    <rect x="120" y="210" width="40" height="110" rx="20" fill="url(#waveGrad)" />
+    <!-- Bar 2 -->
+    <rect x="180" y="150" width="40" height="230" rx="20" fill="url(#waveGrad)" />
+    <!-- Bar 3 (Center Peak) -->
+    <rect x="240" y="100" width="40" height="330" rx="20" fill="#FFFFFF" />
+    <!-- Bar 4 -->
+    <rect x="300" y="150" width="40" height="230" rx="20" fill="url(#waveGrad)" />
+    <!-- Bar 5 (Right) -->
+    <rect x="360" y="210" width="40" height="110" rx="20" fill="url(#waveGrad)" />
+
+    <!-- AI Intelligence Sparkle -->
+    <path d="M 380 90 Q 380 120 410 120 Q 380 120 380 150 Q 380 120 350 120 Q 380 120 380 90 Z" fill="#FFFFFF" opacity="0.95" />
+    <circle cx="380" cy="120" r="6" fill="#38BDF8" />
+  </g>
+</svg>
