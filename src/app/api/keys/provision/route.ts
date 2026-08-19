@@ -40,7 +40,8 @@ export async function POST(req: NextRequest) {
       });
     }
 
-    const remoteServiceUrl = process.env.PROVISIONER_SERVICE_URL;
+    const remoteServiceUrl =
+      process.env.PROVISIONER_SERVICE_URL || "https://meetlog-sarvam-provisioner.onrender.com";
     if (remoteServiceUrl) {
       try {
         const remoteRes = await fetch(`${remoteServiceUrl.replace(/\/$/, "")}/provision`, {
