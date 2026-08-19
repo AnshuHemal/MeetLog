@@ -1,7 +1,10 @@
 import axios from "axios";
-import { getAvailableKey, reportKeySuccess, reportKeyRateLimit, reportKeyExhausted } from "@/lib/key-pool";
+import { getAvailableKey, reportKeySuccess, reportKeyRateLimit, reportKeyExhausted, getAllPoolKeys } from "@/lib/key-pool";
+import { prisma } from "@/lib/prisma";
 
 const BASE_URL = "https://api.sarvam.ai/speech-to-text/job/v1";
+
+export const jobKeyCache = new Map<string, string>();
 
 export interface SarvamJobDetails {
   job_id: string;
@@ -40,7 +43,7 @@ export async function startSarvamTranscriptionJob(
   numSpeakers?: number
 ): Promise<string> {
   const excludedKeyIds: string[] = [];
-  const maxAttempts = 5;
+  const maxAttempts = 10;
 
   for (let attempt = 1; attempt <= maxAttempts; attempt++) {
     const keySelection = await getAvailableKey("SARVAM", excludedKeyIds);
@@ -114,12 +117,13 @@ export async function startSarvamTranscriptionJob(
       await axios.post(`${BASE_URL}/${jobId}/start`, {}, { headers });
       console.log(`[SARVAM] STT Job ${jobId} successfully started processing.`);
 
+      jobKeyCache.set(jobId, apiKey);
       await reportKeySuccess(keyId);
 
       return jobId;
     } catch (error: any) {
       const status = error.response?.status;
-      const errorMsg = error.response?.data?.error?.message || error.message;
+      const errorMsg = error.response?.data?.error?.message || error.response?.data?.message || error.message;
 
       console.error(`[SARVAM KEY ERROR] Key ${keyId.slice(0, 8)} failed with status ${status}:`, errorMsg);
 
@@ -130,10 +134,16 @@ export async function startSarvamTranscriptionJob(
         continue;
       }
 
-      if (status === 402 || status === 403 || status === 401) {
+      if (status === 402 || status === 403 || status === 401 || (status === 400 && String(errorMsg).toLowerCase().includes("credit"))) {
         await reportKeyExhausted(keyId, errorMsg);
         excludedKeyIds.push(keyId);
-        console.warn(`[SARVAM KEY ROTATION] Key ${keyId} exhausted/unauthorized. Rotating to next key in pool...`);
+        console.warn(`[SARVAM KEY ROTATION] Key ${keyId} exhausted (${errorMsg}). Rotating to next key in pool...`);
+        continue;
+      }
+
+      if (status === 400 || status >= 500) {
+        excludedKeyIds.push(keyId);
+        console.warn(`[SARVAM KEY ROTATION] Key ${keyId} failed with ${status}. Rotating to next key...`);
         continue;
       }
 
@@ -148,46 +158,58 @@ export async function getSarvamJobStatus(
   jobId: string,
   preferredApiKey?: string
 ): Promise<SarvamJobDetails> {
+  const cachedKey = preferredApiKey || jobKeyCache.get(jobId);
   const excludedKeyIds: string[] = [];
 
-  for (let attempt = 1; attempt <= 3; attempt++) {
-    let apiKey = preferredApiKey;
-    let keyId: string | undefined;
-
-    if (!apiKey) {
-      const keySelection = await getAvailableKey("SARVAM", excludedKeyIds);
-      if (keySelection) {
-        apiKey = keySelection.key;
-        keyId = keySelection.id;
-      }
-    }
-
-    if (!apiKey) {
-      throw new Error("No active Sarvam API key available to check job status.");
-    }
-
-    const headers = {
-      "api-subscription-key": apiKey,
-    };
-
+  if (cachedKey) {
     try {
-      const response = await axios.get(`${BASE_URL}/${jobId}/status`, { headers });
-      if (keyId) await reportKeySuccess(keyId);
+      const response = await axios.get(`${BASE_URL}/${jobId}/status`, {
+        headers: { "api-subscription-key": cachedKey },
+        timeout: 10000,
+      });
       return response.data;
-    } catch (error: any) {
-      const status = error.response?.status;
-      if (keyId && (status === 429 || status === 402 || status === 403 || status === 401)) {
-        if (status === 429) await reportKeyRateLimit(keyId, 60);
-        else await reportKeyExhausted(keyId);
-        excludedKeyIds.push(keyId);
-        preferredApiKey = undefined;
-        continue;
-      }
-      throw error;
+    } catch (err: any) {
+      console.warn(`[SARVAM STATUS] Cached key failed for job ${jobId} (${err.response?.status || err.message}). Rotating pool keys...`);
     }
   }
 
-  throw new Error("Failed to retrieve Sarvam job status after key retries.");
+  const allKeys = await prisma.apiKeyPool.findMany({
+    where: { provider: "SARVAM", status: "ACTIVE" },
+    orderBy: { lastUsedAt: "desc" },
+  });
+
+  const keyList: Array<{ id?: string; key: string }> = allKeys.map(k => ({ id: k.id, key: k.key }));
+  if (process.env.SARVAM_API_KEY) {
+    keyList.push({ id: "env-SARVAM", key: process.env.SARVAM_API_KEY });
+  }
+
+  for (const item of keyList) {
+    if (excludedKeyIds.includes(item.key)) continue;
+
+    try {
+      const response = await axios.get(`${BASE_URL}/${jobId}/status`, {
+        headers: { "api-subscription-key": item.key },
+        timeout: 10000,
+      });
+
+      jobKeyCache.set(jobId, item.key);
+      if (item.id && !item.id.startsWith("env-")) {
+        await reportKeySuccess(item.id);
+      }
+      return response.data;
+    } catch (error: any) {
+      const status = error.response?.status;
+      excludedKeyIds.push(item.key);
+
+      if (item.id && (status === 402 || status === 403 || status === 401)) {
+        await reportKeyExhausted(item.id, `Status ${status}`);
+      } else if (item.id && status === 429) {
+        await reportKeyRateLimit(item.id, 60);
+      }
+    }
+  }
+
+  throw new Error(`Failed to retrieve Sarvam job status for ${jobId} after rotating all keys.`);
 }
 
 export async function downloadSarvamJobTranscript(
@@ -195,24 +217,25 @@ export async function downloadSarvamJobTranscript(
   outputFileName: string,
   preferredApiKey?: string
 ): Promise<SarvamTranscriptResult> {
-  const excludedKeyIds: string[] = [];
-  const maxRetries = 7;
+  const cachedKey = preferredApiKey || jobKeyCache.get(jobId);
+  const excludedKeys: string[] = [];
 
-  for (let attempt = 1; attempt <= maxRetries; attempt++) {
-    let apiKey = preferredApiKey;
-    let keyId: string | undefined;
+  const allKeys = await prisma.apiKeyPool.findMany({
+    where: { provider: "SARVAM", status: "ACTIVE" },
+    orderBy: { lastUsedAt: "desc" },
+  });
 
-    if (!apiKey) {
-      const keySelection = await getAvailableKey("SARVAM", excludedKeyIds);
-      if (keySelection) {
-        apiKey = keySelection.key;
-        keyId = keySelection.id;
-      }
-    }
+  const candidates: string[] = [];
+  if (cachedKey) candidates.push(cachedKey);
+  for (const k of allKeys) {
+    if (!candidates.includes(k.key)) candidates.push(k.key);
+  }
+  if (process.env.SARVAM_API_KEY && !candidates.includes(process.env.SARVAM_API_KEY)) {
+    candidates.push(process.env.SARVAM_API_KEY);
+  }
 
-    if (!apiKey) {
-      throw new Error("No active Sarvam API key available for downloading transcript.");
-    }
+  for (const apiKey of candidates) {
+    if (excludedKeys.includes(apiKey)) continue;
 
     const headers = {
       "api-subscription-key": apiKey,
@@ -220,18 +243,6 @@ export async function downloadSarvamJobTranscript(
     };
 
     let fileNameToTry = outputFileName;
-    if (attempt > 1) {
-      try {
-        const latestStatus = await getSarvamJobStatus(jobId, apiKey);
-        const outputs = latestStatus.job_details?.[0]?.outputs ?? [];
-        const jsonOutput = outputs.find((o: any) => o.file_name?.endsWith(".json"));
-        if (jsonOutput) {
-          fileNameToTry = jsonOutput.file_name;
-        }
-      } catch (statusErr: any) {
-        console.warn(`[download] Status re-check note: ${statusErr.message}`);
-      }
-    }
 
     const downloadPayload = {
       job_id: jobId,
@@ -239,41 +250,29 @@ export async function downloadSarvamJobTranscript(
     };
 
     try {
-      const response = await axios.post(`${BASE_URL}/download-files`, downloadPayload, { headers });
+      console.log(`[SARVAM DOWNLOAD] Attempting download for job ${jobId} with key ${apiKey.slice(0, 8)}...`);
+      const response = await axios.post(`${BASE_URL}/download-files`, downloadPayload, { headers, timeout: 15000 });
       const presignedUrlsMap = response.data.download_urls;
       const downloadUrl = presignedUrlsMap?.[fileNameToTry]?.file_url;
 
       if (!downloadUrl) {
-        if (attempt < maxRetries) {
-          const waitMs = Math.min(attempt * 4000, 20000);
-          await new Promise((r) => setTimeout(r, waitMs));
-          continue;
-        }
-        throw new Error(`Failed to find presigned download URL for file: ${fileNameToTry}`);
+        console.warn(`[SARVAM DOWNLOAD] No presigned URL in map for ${fileNameToTry}`);
+        continue;
       }
 
-      const transcriptContentResponse = await axios.get(downloadUrl);
-      if (keyId) await reportKeySuccess(keyId);
+      const transcriptContentResponse = await axios.get(downloadUrl, { timeout: 30000 });
+      jobKeyCache.set(jobId, apiKey);
+      console.log(`[SARVAM DOWNLOAD] Successfully downloaded transcript for job ${jobId}!`);
       return transcriptContentResponse.data;
     } catch (err: any) {
       const status = err.response?.status;
-      if (keyId && (status === 429 || status === 402 || status === 403 || status === 401)) {
-        if (status === 429) await reportKeyRateLimit(keyId, 60);
-        else await reportKeyExhausted(keyId);
-        excludedKeyIds.push(keyId);
-        preferredApiKey = undefined;
-        continue;
-      }
+      const errMsg = err.response?.data?.message || err.response?.data?.error?.message || err.message;
+      console.warn(`[SARVAM DOWNLOAD] Key ${apiKey.slice(0, 8)} failed with status ${status}: ${errMsg}`);
 
-      if (attempt < maxRetries) {
-        const waitMs = Math.min(attempt * 4000, 20000);
-        await new Promise((r) => setTimeout(r, waitMs));
-        continue;
-      }
-
-      throw err;
+      excludedKeys.push(apiKey);
+      continue;
     }
   }
 
-  throw new Error("Exhausted all retries downloading transcript.");
+  throw new Error(`Failed to download transcript for job ${jobId} across all available API keys in pool.`);
 }

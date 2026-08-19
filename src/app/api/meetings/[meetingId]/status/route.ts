@@ -70,8 +70,36 @@ export async function GET(req: NextRequest, { params }: RouteParams) {
     }
 
     if (jobDetails.job_state === "Failed") {
-      await markAsFailed(meetingId, jobDetails.error_message || "SARvam job failed");
-      return NextResponse.json({ status: "FAILED", error: jobDetails.error_message, progressMessage: "Sarvam transcription job failed." });
+      const errMsg = jobDetails.error_message || "Sarvam job failed";
+      console.warn(`[STATUS] Job ${meeting.sarvamJobId} failed on Sarvam: ${errMsg}. Attempting failover to next key...`);
+
+      try {
+        const { startSarvamTranscriptionJob } = await import("@/lib/sarvam");
+        const newJobId = await startSarvamTranscriptionJob(
+          meeting.audioUrl,
+          meeting.languageCode,
+          meeting.numSpeakers ?? undefined
+        );
+
+        await prisma.meeting.update({
+          where: { id: meetingId },
+          data: {
+            sarvamJobId: newJobId,
+            retryCount: 0,
+            lastError: null,
+            progressMessage: "API key exhausted. Rotated to next key in pool and resumed transcription...",
+          },
+        });
+
+        return NextResponse.json({
+          status: "TRANSCRIBING",
+          progressMessage: "API key exhausted. Rotated to next key in pool and resumed transcription...",
+        });
+      } catch (failoverErr: any) {
+        console.error(`[STATUS] Auto-failover failed:`, failoverErr.message);
+        await markAsFailed(meetingId, errMsg);
+        return NextResponse.json({ status: "FAILED", error: errMsg, progressMessage: `Failed: ${errMsg}` });
+      }
     }
 
     const displayState =
