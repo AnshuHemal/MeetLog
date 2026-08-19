@@ -1,4 +1,3 @@
-
 import logging
 import psycopg2
 from psycopg2.extras import execute_values
@@ -21,20 +20,16 @@ def save_api_key(
         conn = get_connection()
         cur = conn.cursor()
 
-        cur.execute(
-            (api_key, label or f"Auto: {email}", status),
-        )
+        sql_insert_pool = "INSERT INTO api_key_pools (\"id\", \"provider\", \"key\", \"label\", \"status\", \"usageCount\", \"errorCount\", \"createdAt\", \"updatedAt\") VALUES (gen_random_uuid()::text, 'SARVAM', %s, %s, %s, 0, 0, NOW(), NOW()) RETURNING \"id\""
+        cur.execute(sql_insert_pool, (api_key, label or f"Auto: {email}", status))
         key_id = cur.fetchone()[0]
 
         try:
-            cur.execute(
-                (email, password, key_id, status),
-            )
+            sql_insert_account = "INSERT INTO sarvam_provisioned_accounts (id, email, password, api_key_pool_id, status, created_at, updated_at) VALUES (gen_random_uuid(), %s, %s, %s, %s, NOW(), NOW())"
+            cur.execute(sql_insert_account, (email, password, key_id, status))
         except Exception:
             conn.rollback()
-            cur.execute(
-                (api_key, label or f"Auto: {email}", status),
-            )
+            cur.execute(sql_insert_pool, (api_key, label or f"Auto: {email}", status))
             key_id = cur.fetchone()[0]
 
         conn.commit()
@@ -62,9 +57,12 @@ def save_batch_keys(keys_data: list[dict]) -> dict:
         conn = get_connection()
         cur = conn.cursor()
 
+        sql_insert_pool = "INSERT INTO api_key_pools (\"id\", \"provider\", \"key\", \"label\", \"status\", \"usageCount\", \"errorCount\", \"createdAt\", \"updatedAt\") VALUES (gen_random_uuid()::text, 'SARVAM', %s, %s, %s, 0, 0, NOW(), NOW()) RETURNING \"id\""
+
         for item in keys_data:
             try:
                 cur.execute(
+                    sql_insert_pool,
                     (
                         item["api_key"],
                         item.get("label") or f"Auto: {item['email']}",
@@ -99,8 +97,8 @@ def get_pool_stats() -> dict:
         conn = get_connection()
         cur = conn.cursor()
 
-        cur.execute(
-        )
+        sql_stats = """SELECT COUNT(*) as total, COUNT(*) FILTER (WHERE "status" = 'ACTIVE') as active, COUNT(*) FILTER (WHERE "status" = 'RATE_LIMITED') as rate_limited, COUNT(*) FILTER (WHERE "status" = 'EXHAUSTED') as exhausted, COUNT(*) FILTER (WHERE "status" = 'DISABLED') as disabled, COALESCE(SUM("usageCount"), 0) as total_usage FROM api_key_pools WHERE "provider" = 'SARVAM'"""
+        cur.execute(sql_stats)
 
         row = cur.fetchone()
         cur.close()

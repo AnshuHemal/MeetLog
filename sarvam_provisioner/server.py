@@ -28,9 +28,19 @@ class ProvisionRequest(BaseModel):
     dry_run: bool = False
     headless: bool = True
 
+@app.get("/")
+@app.head("/")
+def root():
+    return {"status": "ok", "service": "sarvam_provisioner", "message": "MeetLog Provisioner Engine is running"}
+
 @app.get("/health")
+@app.head("/health")
 def health():
     return {"status": "ok", "service": "sarvam_provisioner"}
+
+@app.get("/favicon.ico")
+def favicon():
+    return {}
 
 @app.get("/stats")
 def stats():
