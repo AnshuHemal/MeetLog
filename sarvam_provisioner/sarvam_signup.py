@@ -197,16 +197,20 @@ class SarvamProvisioner:
 
         # 1. Complete onboarding wizard steps until redirected away from /onboarding
         try:
-            for step_i in range(1, 6):
-                if "onboarding" not in page.url and step_i > 1:
-                    break
-                await log(f"Handling onboarding wizard (step {step_i}, URL: {page.url})...")
-                await self.capture_frame(page, log_cb, f"Onboarding Step {step_i}")
+            await log("Handling initial onboarding setup...")
+            for attempt in range(1, 12):
+                curr_url = page.url
+                await log(f"Checking onboarding status (attempt {attempt}/12, URL: {curr_url})...")
+                await self.capture_frame(page, log_cb, f"Onboarding Check {attempt}")
 
-                # Check for Developer role
+                if "onboarding" not in curr_url and attempt > 3:
+                    await log("Successfully exited onboarding wizard!")
+                    break
+
+                # Role: Developer
                 dev_clicked = await page.evaluate("""
                     () => {
-                        for (const el of document.querySelectorAll("button, [role='button'], div, span")) {
+                        for (const el of document.querySelectorAll("button, [role='button'], div, span, p")) {
                             if ((el.innerText || "").trim() === "Developer") {
                                 el.click();
                                 return true;
@@ -219,10 +223,10 @@ class SarvamProvisioner:
                     await log("Selected 'Developer' role.")
                     await self._human_delay(800, 1500)
 
-                # Check for Sarvam API goal
+                # Goal: Sarvam API
                 api_clicked = await page.evaluate("""
                     () => {
-                        for (const el of document.querySelectorAll("button, [role='button'], div, span")) {
+                        for (const el of document.querySelectorAll("button, [role='button'], div, span, p")) {
                             if ((el.innerText || "").trim() === "Sarvam API") {
                                 el.click();
                                 return true;
@@ -235,10 +239,10 @@ class SarvamProvisioner:
                     await log("Selected 'Sarvam API' goal.")
                     await self._human_delay(800, 1500)
 
-                # Click any Continue / Continue to Sarvam API button
-                cont_clicked = await page.evaluate("""
+                # Continue / Continue to Sarvam API button
+                cont_text = await page.evaluate("""
                     () => {
-                        for (const el of document.querySelectorAll("button, [role='button']")) {
+                        for (const el of document.querySelectorAll("button, [role='button'], a")) {
                             const txt = (el.innerText || "").trim();
                             if (txt === "Continue to Sarvam API" || txt === "Continue" || txt === "Get Started" || txt === "Next") {
                                 el.click();
@@ -248,13 +252,12 @@ class SarvamProvisioner:
                         return null;
                     }
                 """)
-                if cont_clicked:
-                    await log(f"Clicked '{cont_clicked}' button.")
-                    await self._human_delay(2500, 3500)
-                    await self.capture_frame(page, log_cb, f"After '{cont_clicked}'")
-                else:
-                    if step_i > 1:
-                        break
+                if cont_text:
+                    await log(f"Clicked onboarding '{cont_text}' button.")
+                    await self._human_delay(2500, 4000)
+                    await self.capture_frame(page, log_cb, f"After '{cont_text}'")
+
+                await asyncio.sleep(1)
         except Exception as e:
             logger.warning(f"Onboarding flow check: {e}")
 
@@ -262,10 +265,30 @@ class SarvamProvisioner:
         await log("Navigating directly to https://indus.sarvam.ai/key-management...")
         try:
             await page.goto("https://indus.sarvam.ai/key-management", wait_until="domcontentloaded", timeout=30000)
-            await self._human_delay(2000, 3000)
+            await self._human_delay(2000, 3500)
             await self.capture_frame(page, log_cb, "Key Management Page Loaded")
         except Exception as e:
             await log(f"Navigation warning: {e}")
+
+        # If redirected back to onboarding, click Continue again
+        if "onboarding" in page.url:
+            await log("Detected onboarding redirect, completing final step...")
+            await page.evaluate("""
+                () => {
+                    for (const el of document.querySelectorAll("button, [role='button']")) {
+                        const txt = (el.innerText || "").trim();
+                        if (txt.includes("Continue") || txt.includes("Get Started") || txt.includes("Next")) {
+                            el.click();
+                        }
+                    }
+                }
+            """)
+            await self._human_delay(2500, 3500)
+            try:
+                await page.goto("https://indus.sarvam.ai/key-management", wait_until="domcontentloaded", timeout=20000)
+                await self._human_delay(2000, 3000)
+            except Exception:
+                pass
 
         # 3. Locate and click "+ Create API Key" with React hydration wait
         key_name = f"meetlog-pool-{random.randint(1000, 9999)}"
