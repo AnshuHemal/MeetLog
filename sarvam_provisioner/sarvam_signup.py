@@ -190,126 +190,210 @@ class SarvamProvisioner:
             await self._human_delay(1500, 2500)
 
             # Role selection
-            for dev_sel in ["button:has-text('Developer')", "[role='button']:has-text('Developer')", "div:has-text('Developer')"]:
-                dev_btn = page.locator(dev_sel).first
-                if await dev_btn.count() > 0 and await dev_btn.is_visible():
-                    await dev_btn.click()
-                    await log("Selected 'Developer' role.")
-                    await self._human_delay(1000, 1800)
-                    break
+            for dev_sel in ["button:has-text('Developer')", "[role='button']:has-text('Developer')", "div:has-text('Developer')", "span:has-text('Developer')"]:
+                try:
+                    dev_btn = page.locator(dev_sel).first
+                    if await dev_btn.count() > 0 and await dev_btn.is_visible():
+                        await dev_btn.click()
+                        await log("Selected 'Developer' role.")
+                        await self._human_delay(1000, 1800)
+                        break
+                except Exception:
+                    pass
 
             # Goal selection
-            for api_sel in ["button:has-text('Sarvam API')", "[role='button']:has-text('Sarvam API')", "div:has-text('Sarvam API')"]:
-                api_btn = page.locator(api_sel).first
-                if await api_btn.count() > 0 and await api_btn.is_visible():
-                    await api_btn.click()
-                    await log("Selected 'Sarvam API' goal.")
-                    await self._human_delay(1000, 1800)
-                    break
+            for api_sel in ["button:has-text('Sarvam API')", "[role='button']:has-text('Sarvam API')", "div:has-text('Sarvam API')", "span:has-text('Sarvam API')"]:
+                try:
+                    api_btn = page.locator(api_sel).first
+                    if await api_btn.count() > 0 and await api_btn.is_visible():
+                        await api_btn.click()
+                        await log("Selected 'Sarvam API' goal.")
+                        await self._human_delay(1000, 1800)
+                        break
+                except Exception:
+                    pass
 
             # Continue button
             for cont_sel in ["button:has-text('Continue to Sarvam API')", "button:has-text('Continue')", "button:has-text('Get Started')", "button:has-text('Next')"]:
-                continue_btn = page.locator(cont_sel).first
-                if await continue_btn.count() > 0 and await continue_btn.is_visible():
-                    await continue_btn.click()
-                    await log("Submitted onboarding choices.")
-                    await self._human_delay(2000, 3000)
-                    break
+                try:
+                    continue_btn = page.locator(cont_sel).first
+                    if await continue_btn.count() > 0 and await continue_btn.is_visible():
+                        await continue_btn.click()
+                        await log("Submitted onboarding choices.")
+                        await self._human_delay(2000, 3000)
+                        break
+                except Exception:
+                    pass
         except Exception as e:
             logger.warning(f"Onboarding flow check: {e}")
 
-        # 2. Navigate directly to https://indus.sarvam.ai/key-management
-        await log("Navigating to https://indus.sarvam.ai/key-management...")
-        try:
-            await page.goto("https://indus.sarvam.ai/key-management", wait_until="domcontentloaded", timeout=35000)
-            await self._human_delay(2500, 4000)
-        except Exception as e:
-            await log(f"Navigation warning: {e}")
+        # 2. Locate and click "+ Create API Key" with resilient attempts
+        key_name = f"meetlog-pool-{random.randint(1000, 9999)}"
+        clicked_create = False
 
-        # 3. Click "+ Create API Key" button
-        await log("Looking for '+ Create API Key' button...")
-        create_btn = page.locator("button:has-text('Create API Key'), button:has-text('+ Create API Key'), button:has-text('Create Key'), button:has-text('+ Create')").first
-        try:
-            await create_btn.wait_for(state="visible", timeout=20000)
-            await create_btn.click()
-            await log("Clicked '+ Create API Key' button.")
-            await self._human_delay(1200, 2000)
-        except Exception as e:
-            await log(f"Could not find Create API Key button: {e}")
-            sidebar_link = page.locator("a:has-text('API Keys'), a[href*='key-management']").first
-            if await sidebar_link.count() > 0 and await sidebar_link.is_visible():
-                await sidebar_link.click()
-                await self._human_delay(2000, 3000)
-                if await create_btn.count() > 0 and await create_btn.is_visible():
-                    await create_btn.click()
+        for attempt in range(1, 6):
+            await log(f"Searching for '+ Create API Key' (attempt {attempt}/5)...")
 
-        # 4. Fill key name in dialog
-        await log("Filling API key name...")
-        name_input = page.locator("input[placeholder*='production-app' i], input[placeholder*='name' i], input[type='text']").first
-        try:
-            await name_input.wait_for(state="visible", timeout=15000)
-            key_name = f"meetlog-pool-{random.randint(1000, 9999)}"
-            await name_input.fill(key_name)
-            await log(f"Entered key name: {key_name}")
-            await self._human_delay(500, 1000)
-        except Exception as e:
-            await log(f"Key name input warning: {e}")
+            # Try direct JS evaluation click
+            clicked = await page.evaluate("""
+                () => {
+                    const candidateSelectors = ["button", "[role='button']", "a", "span", "div"];
+                    for (const sel of candidateSelectors) {
+                        for (const el of document.querySelectorAll(sel)) {
+                            const txt = (el.innerText || "").trim();
+                            if (txt.includes("Create API Key") || txt === "+ Create API Key" || txt === "Create Key" || txt === "+ Create") {
+                                el.click();
+                                return true;
+                            }
+                        }
+                    }
+                    return false;
+                }
+            """)
+            if clicked:
+                await log("Clicked '+ Create API Key' button.")
+                clicked_create = True
+                await self._human_delay(1500, 2500)
+                break
 
-        # 5. Click "Create key" button
-        await log("Submitting key creation...")
-        submit_btn = page.locator("button:has-text('Create key'), button:has-text('Create'), button[type='submit']").first
-        try:
-            await submit_btn.wait_for(state="visible", timeout=10000)
-            await submit_btn.click()
-            await log("Submitted key creation form.")
-            await self._human_delay(2000, 3500)
-        except Exception as e:
-            await log(f"Submit button warning: {e}")
+            # Try clicking sidebar 'API Keys' link
+            try:
+                sidebar_link = page.locator("a:has-text('API Keys'), span:has-text('API Keys'), a[href*='key-management']").first
+                if await sidebar_link.count() > 0 and await sidebar_link.is_visible():
+                    await log("Clicking sidebar 'API Keys' link...")
+                    await sidebar_link.click()
+                    await self._human_delay(2000, 3000)
+                    continue
+            except Exception:
+                pass
 
-        # 6. Extract the newly created API key from "API Key created" dialog
+            # Try direct navigation to key-management URL
+            try:
+                await page.goto("https://indus.sarvam.ai/key-management", wait_until="domcontentloaded", timeout=20000)
+                await self._human_delay(2500, 3500)
+            except Exception:
+                pass
+
+        # 3. Fill key name in dialog
+        await log(f"Entering API key name: {key_name}...")
+        filled = await page.evaluate("""
+            (name) => {
+                const inp = document.querySelector("input[placeholder*='production-app' i]") || 
+                            document.querySelector("input[placeholder*='name' i]") || 
+                            document.querySelector("input[type='text']") || 
+                            document.querySelector("input");
+                if (inp) {
+                    inp.focus();
+                    inp.value = name;
+                    inp.dispatchEvent(new Event('input', { bubbles: true }));
+                    inp.dispatchEvent(new Event('change', { bubbles: true }));
+                    return true;
+                }
+                return false;
+            }
+        """, key_name)
+
+        if not filled:
+            try:
+                name_input = page.locator("input[placeholder*='production-app' i], input[type='text'], input").first
+                if await name_input.count() > 0:
+                    await name_input.fill(key_name)
+                    filled = True
+            except Exception as e:
+                logger.warning(f"Playwright fill fallback: {e}")
+
+        await self._human_delay(800, 1500)
+
+        # 4. Click "Create key" submit button
+        await log("Submitting key creation form...")
+        submitted = await page.evaluate("""
+            () => {
+                for (const b of document.querySelectorAll("button, [role='button'], input[type='submit']")) {
+                    const txt = (b.innerText || b.value || "").trim();
+                    if (txt === "Create key" || txt === "Create" || txt === "Save") {
+                        b.click();
+                        return true;
+                    }
+                }
+                return false;
+            }
+        """)
+
+        if not submitted:
+            try:
+                submit_btn = page.locator("button:has-text('Create key'), button:has-text('Create'), button[type='submit']").first
+                if await submit_btn.count() > 0:
+                    await submit_btn.click()
+            except Exception as e:
+                logger.warning(f"Playwright submit fallback: {e}")
+
+        await self._human_delay(2000, 3500)
+
+        # 5. Extract unmasked API key from confirmation dialog (polling up to 10 seconds)
         await log("Extracting unmasked API key from confirmation dialog...")
         api_key = None
 
-        # Check DOM element for sk_... token
-        try:
-            extracted_token = await page.evaluate("""
+        for _ in range(10):
+            try:
+                extracted_token = await page.evaluate("""
+                    () => {
+                        for (const el of document.querySelectorAll("input, textarea, code, pre, span, div, p")) {
+                            let val = (el.value || el.innerText || "").trim();
+                            if (val.startsWith("sk_") && val.length >= 24 && !val.includes(" ") && !val.includes("*")) {
+                                return val;
+                            }
+                        }
+                        return null;
+                    }
+                """)
+                if extracted_token:
+                    api_key = extracted_token
+                    await log(f"API key extracted from dialog: {api_key[:8]}...{api_key[-4:]}")
+                    break
+            except Exception:
+                pass
+            await asyncio.sleep(1)
+
+        # Fallback to Copy button
+        if not api_key:
+            copy_clicked = await page.evaluate("""
                 () => {
-                    for (const el of document.querySelectorAll("input, textarea, code, pre, span, div, p")) {
-                        let val = (el.value || el.innerText || "").trim();
-                        if (val.startsWith("sk_") && val.length >= 24 && !val.includes(" ") && !val.includes("*")) {
-                            return val;
+                    for (const b of document.querySelectorAll("button, [role='button']")) {
+                        const txt = (b.innerText || "").trim();
+                        if (txt === "Copy" || b.getAttribute("aria-label")?.includes("copy")) {
+                            b.click();
+                            return true;
                         }
                     }
-                    return null;
+                    return false;
                 }
             """)
-            if extracted_token:
-                api_key = extracted_token
-                await log(f"API key extracted from dialog: {api_key[:8]}...{api_key[-4:]}")
-        except Exception as e:
-            logger.warning(f"DOM token scan: {e}")
-
-        # If not extracted from value, try clicking the "Copy" button
-        if not api_key:
-            copy_btn = page.locator("button:has-text('Copy'), [aria-label*='copy' i], svg[class*='copy' i]").first
-            try:
-                if await copy_btn.count() > 0 and await copy_btn.is_visible():
-                    await log("Clicking dialog 'Copy' button...")
-                    await copy_btn.click()
-                    await self._human_delay(500, 1000)
+            if copy_clicked:
+                await log("Clicked modal 'Copy' button.")
+                await self._human_delay(500, 1000)
+                try:
                     cb_text = await page.evaluate("navigator.clipboard.readText()")
                     if cb_text and cb_text.strip().startswith("sk_"):
                         api_key = cb_text.strip()
                         await log(f"API key extracted via clipboard: {api_key[:8]}...{api_key[-4:]}")
-            except Exception as e:
-                logger.warning(f"Copy button warning: {e}")
+                except Exception as e:
+                    logger.warning(f"Clipboard read warning: {e}")
 
-        # Close the dialog by clicking "I have saved it"
+        # 6. Close the dialog by clicking "I have saved it"
         try:
-            saved_btn = page.locator("button:has-text('I have saved it'), button:has-text('Done'), button:has-text('Close')").first
-            if await saved_btn.count() > 0 and await saved_btn.is_visible():
-                await saved_btn.click()
-                await self._human_delay(500, 1000)
+            await page.evaluate("""
+                () => {
+                    for (const b of document.querySelectorAll("button, [role='button']")) {
+                        const txt = (b.innerText || "").trim();
+                        if (txt.includes("I have saved it") || txt === "Done" || txt === "Close") {
+                            b.click();
+                            return true;
+                        }
+                    }
+                    return false;
+                }
+            """)
+            await self._human_delay(500, 1000)
         except Exception:
             pass
 
