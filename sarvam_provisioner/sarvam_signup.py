@@ -303,16 +303,14 @@ class SarvamProvisioner:
         await self._human_delay(1200, 2000)
         await self.capture_frame(page, log_cb, "Create Key Dialog Opened")
 
-        # 4. Fill key name in dialog
+        # 4. Fill key name in dialog using real native keystrokes
         await log(f"Entering API key name: {key_name}...")
         try:
-            await page.wait_for_selector(
-                "input[placeholder*='production-app' i], input[placeholder*='name' i], input[type='text'], input",
-                state="visible",
-                timeout=12000
-            )
             name_input = page.locator("input[placeholder*='production-app' i], input[placeholder*='name' i], input[type='text'], input").first
-            await name_input.fill(key_name)
+            await name_input.wait_for(state="visible", timeout=12000)
+            await name_input.click()
+            await name_input.fill("")
+            await name_input.press_sequentially(key_name, delay=30)
         except Exception:
             await page.evaluate("""
                 (name) => {
@@ -322,7 +320,9 @@ class SarvamProvisioner:
                                 document.querySelector("input");
                     if (inp) {
                         inp.focus();
-                        inp.value = name;
+                        const nativeSetter = Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, 'value')?.set;
+                        if (nativeSetter) nativeSetter.call(inp, name);
+                        else inp.value = name;
                         inp.dispatchEvent(new Event('input', { bubbles: true }));
                         inp.dispatchEvent(new Event('change', { bubbles: true }));
                     }
@@ -334,15 +334,18 @@ class SarvamProvisioner:
 
         # 5. Click "Create key" submit button
         await log("Submitting key creation form...")
-        submit_btn = page.locator("button:has-text('Create key'), button:has-text('Create'), button[type='submit']").first
-        if await submit_btn.count() > 0 and await submit_btn.is_visible():
-            await submit_btn.click()
-        else:
+        try:
+            submit_btn = page.locator("button:has-text('Create key'), button:has-text('Create Key'), button:has-text('Create'), button[type='submit']").first
+            if await submit_btn.count() > 0 and await submit_btn.is_visible():
+                await submit_btn.click()
+            else:
+                await page.keyboard.press("Enter")
+        except Exception:
             await page.evaluate("""
                 () => {
                     for (const b of document.querySelectorAll("button, [role='button'], input[type='submit']")) {
                         const txt = (b.innerText || b.value || "").trim();
-                        if (txt === "Create key" || txt === "Create" || txt === "Save") {
+                        if (txt === "Create key" || txt === "Create Key" || txt === "Create" || txt === "Save") {
                             b.click();
                             return true;
                         }
@@ -354,28 +357,26 @@ class SarvamProvisioner:
         await self._human_delay(2000, 3500)
         await self.capture_frame(page, log_cb, "Key Confirmation Dialog")
 
-        # 6. Extract unmasked API key from confirmation dialog (polling up to 12 seconds)
+        # 6. Extract unmasked API key from confirmation dialog (polling up to 15 seconds)
         await log("Extracting unmasked API key from confirmation dialog...")
-        try:
-            await page.wait_for_selector(
-                "button:has-text('I have saved it'), button:has-text('Copy'), input[value*='sk_']",
-                state="visible",
-                timeout=12000
-            )
-        except Exception:
-            pass
-
         api_key = None
 
-        for _ in range(12):
+        for attempt_sec in range(15):
             try:
                 extracted_token = await page.evaluate("""
                     () => {
-                        for (const el of document.querySelectorAll("input, textarea, code, pre, span, div, p")) {
+                        // 1. Check all inputs and textareas
+                        for (const el of document.querySelectorAll("input, textarea, code, pre")) {
                             let val = (el.value || el.innerText || "").trim();
-                            if (val.startsWith("sk_") && val.length >= 24 && !val.includes(" ") && !val.includes("*")) {
+                            if (val.startsWith("sk_") && val.length >= 24 && !val.includes("*")) {
                                 return val;
                             }
+                        }
+                        // 2. Scan entire page body text for unmasked sk_ token
+                        const fullText = document.body.innerText || "";
+                        const match = fullText.match(/\\b(sk_[a-zA-Z0-9_-]{20,80})\\b/);
+                        if (match && !match[1].includes("*")) {
+                            return match[1];
                         }
                         return null;
                     }
@@ -386,22 +387,22 @@ class SarvamProvisioner:
                     break
             except Exception:
                 pass
-            await asyncio.sleep(1)
 
-        # Fallback to Copy button
-        if not api_key:
-            copy_btn = page.locator("button:has-text('Copy'), [aria-label*='copy' i], svg[class*='copy' i]").first
-            if await copy_btn.count() > 0 and await copy_btn.is_visible():
-                await copy_btn.click()
-                await log("Clicked modal 'Copy' button.")
-                await self._human_delay(500, 1000)
-                try:
+            # Try clicking Copy button if available
+            try:
+                copy_btn = page.locator("button:has-text('Copy'), [aria-label*='copy' i], svg[class*='copy' i]").first
+                if await copy_btn.count() > 0 and await copy_btn.is_visible():
+                    await copy_btn.click()
+                    await asyncio.sleep(0.5)
                     cb_text = await page.evaluate("navigator.clipboard.readText()")
-                    if cb_text and cb_text.strip().startswith("sk_"):
+                    if cb_text and cb_text.strip().startswith("sk_") and not "*" in cb_text:
                         api_key = cb_text.strip()
                         await log(f"API key extracted via clipboard: {api_key[:8]}...{api_key[-4:]}")
-                except Exception as e:
-                    logger.warning(f"Clipboard read warning: {e}")
+                        break
+            except Exception:
+                pass
+
+            await asyncio.sleep(1)
 
         # 7. Close the dialog by clicking "I have saved it"
         try:
