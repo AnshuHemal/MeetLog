@@ -14,11 +14,12 @@ import {
 import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar";
 import { Button } from "@/components/ui/button";
 import { Separator } from "@/components/ui/separator";
-import { signOut, useSession } from "@/lib/auth-client";
+import { useSession } from "@/lib/auth-client";
 import { cn } from "@/lib/utils";
 import type { WorkspaceRole } from "@/generated/prisma/enums";
 import { useMobileSidebarSafe } from "@/components/providers/mobile-sidebar-provider";
-import { useProvisionerUnlocked } from "@/hooks/use-provisioner-unlocked";
+import { LogoutConfirmationModal } from "@/components/shared/logout-confirmation-modal";
+import React, { useState } from "react";
 
 interface WorkspaceSidebarProps {
   workspace: { id: string; name: string; slug: string; logo: string | null };
@@ -41,11 +42,7 @@ export function WorkspaceSidebar({
   const { data: session } = useSession();
   const user = session?.user;
   const mobileSidebar = useMobileSidebarSafe();
-  const [isProvisionerUnlocked] = useProvisionerUnlocked();
-
-  async function handleSignOut() {
-    await signOut({ fetchOptions: { onSuccess: () => { window.location.href = "/"; } } });
-  }
+  const [showLogoutModal, setShowLogoutModal] = useState(false);
 
   function isActive(href: string, exact = false) {
     if (exact) return pathname === href;
@@ -72,9 +69,7 @@ export function WorkspaceSidebar({
     { href: `${baseSlug}/settings/vocabulary`,   label: "AI Calibration", icon: BookOpen, exact: true  },
     { href: `${baseSlug}/settings/integrations`, label: "Integrations",   icon: Plug,     exact: true  },
     { href: `${baseSlug}/settings/keys`,         label: "API Key Pool",   icon: KeyRound, exact: true  },
-    ...(isProvisionerUnlocked
-      ? [{ href: `${baseSlug}/settings/provisioner`, label: "Key Provisioner", icon: Bot, exact: true }]
-      : []),
+    // { href: `${baseSlug}/settings/provisioner`, label: "Key Provisioner", icon: Bot, exact: true },
   ];
 
   const sidebarContent = (
@@ -168,7 +163,13 @@ export function WorkspaceSidebar({
               <span className="truncate text-sm font-semibold text-sidebar-foreground">{user.name ?? "User"}</span>
               <span className="truncate text-[10px] text-muted-foreground">{user.email}</span>
             </div>
-            <Button variant="ghost" size="icon" className="size-6 shrink-0 text-muted-foreground hover:text-destructive" onClick={handleSignOut} aria-label="Sign out">
+            <Button
+              variant="ghost"
+              size="icon"
+              className="size-6 shrink-0 text-muted-foreground hover:text-destructive cursor-pointer transition-colors"
+              onClick={() => setShowLogoutModal(true)}
+              aria-label="Sign out"
+            >
               <LogOut className="size-3.5" />
             </Button>
           </div>
@@ -213,6 +214,13 @@ export function WorkspaceSidebar({
           </>
         )}
       </AnimatePresence>
+
+      {/* Production Logout Confirmation Modal */}
+      <LogoutConfirmationModal
+        open={showLogoutModal}
+        onClose={() => setShowLogoutModal(false)}
+        user={user}
+      />
     </>
   );
 }

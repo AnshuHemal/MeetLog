@@ -103,7 +103,7 @@ graph TD
 ### **Database & Infrastructure**
 - **Database**: Serverless PostgreSQL via **Neon Cloud**
 - **ORM**: Prisma ORM with type-safe schema synchronization
-- **Audio & Storage**: Google Drive API & Cloudinary Storage
+- **Audio & Storage**: Google Drive API Resumable Chunked Storage
 
 ---
 
@@ -145,10 +145,8 @@ GITHUB_CLIENT_SECRET="your-github-client-secret"
 SARVAM_API_KEY="your-sarvam-api-key"
 GEMINI_API_KEY="your-gemini-api-key"
 
-# Cloud Storage
-CLOUDINARY_CLOUD_NAME="your-cloudinary-name"
-CLOUDINARY_API_KEY="your-cloudinary-key"
-CLOUDINARY_API_SECRET="your-cloudinary-secret"
+# Google Drive Storage
+GOOGLE_DRIVE_REFRESH_TOKEN="your-gdrive-refresh-token"
 ```
 
 ### 3. Run Database Migrations

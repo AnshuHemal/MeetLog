@@ -1,15 +1,12 @@
 "use client";
 
-import { uploadAudioToCloudinary } from "@/lib/cloudinary-client-upload";
-
 const CHUNK_SIZE = 8 * 1024 * 1024;
-const MAX_FALLBACK_SIZE = 95 * 1024 * 1024;
 
 export interface DriveUploadResult {
   audioUrl: string;
-  fileId?: string;
+  fileId: string;
   duration: number;
-  provider: "gdrive" | "cloudinary";
+  provider: "gdrive";
 }
 
 export async function uploadAudioToGoogleDrive(
@@ -38,30 +35,16 @@ export async function uploadAudioToGoogleDrive(
     sessionData = await sessionRes.json();
   } catch (initErr: any) {
     console.error("[GDRIVE SESSION INIT ERROR]", initErr);
-    if (file.size > MAX_FALLBACK_SIZE) {
-      throw new Error(
-        `Google Drive upload initialization failed: ${initErr.message}. For large files (${fileSizeMb}MB), please ensure Google Drive OAuth is authorized. Run 'npm run gdrive:token' in terminal to refresh credentials.`
-      );
-    }
-    throw initErr;
+    throw new Error(
+      `Google Drive upload initialization failed: ${initErr.message}. For files (${fileSizeMb}MB), please ensure Google Drive OAuth is authorized. Run 'npm run gdrive:token' in terminal to refresh credentials.`
+    );
   }
 
   if (!sessionData.isDriveConfigured || !sessionData.uploadUrl) {
     const driveError = sessionData.error || sessionData.message || "Google Drive is not authenticated.";
-
-    if (file.size > MAX_FALLBACK_SIZE) {
-      throw new Error(
-        `Google Drive is required for this ${fileSizeMb}MB file: ${driveError}\n\nPlease run 'npm run gdrive:token' in your project terminal to generate a fresh Google Drive refresh token.`
-      );
-    }
-
-    console.warn(`[STORAGE FALLBACK] Google Drive unavailable (${driveError}). Attempting Cloudinary fallback for smaller file (${fileSizeMb}MB)...`);
-    const result = await uploadAudioToCloudinary(file, onProgress);
-    return {
-      audioUrl: result.audioUrl,
-      duration: result.duration,
-      provider: "cloudinary",
-    };
+    throw new Error(
+      `Google Drive authorization required for upload (${fileSizeMb}MB): ${driveError}\n\nPlease run 'npm run gdrive:token' in your project terminal to generate a fresh Google Drive refresh token.`
+    );
   }
 
   const uploadUrl = sessionData.uploadUrl;

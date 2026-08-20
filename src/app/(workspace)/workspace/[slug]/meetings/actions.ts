@@ -3,7 +3,7 @@
 import { revalidatePath } from "next/cache";
 import { prisma } from "@/lib/prisma";
 import { requireUser } from "@/lib/session";
-import { deleteCloudinaryAssetByUrl } from "@/lib/cloudinary-server";
+import { deleteGoogleDriveFile } from "@/lib/gdrive";
 import type { WorkspaceRole } from "@/generated/prisma/enums";
 
 const DELETE_ALLOWED_ROLES: WorkspaceRole[] = ["OWNER", "ADMIN", "MEMBER"];
@@ -44,21 +44,14 @@ export async function deleteMeetingAction(
     }
 
     try {
-      if (meeting.audioUrl.includes("drive.google.com")) {
-        const { deleteGoogleDriveFile } = await import("@/lib/gdrive");
+      if (meeting.audioUrl) {
         await deleteGoogleDriveFile(meeting.audioUrl);
-      } else {
-        await deleteCloudinaryAssetByUrl(meeting.audioUrl);
       }
     } catch (storageError) {
-      console.error(
-        `[deleteMeeting] Storage delete failed for meeting ${meetingId}:`,
+      console.warn(
+        `[deleteMeeting] Google Drive delete warning for meeting ${meetingId}:`,
         storageError,
       );
-      return {
-        success: false,
-        error: "Could not remove the recording from cloud storage. Please try again.",
-      };
     }
 
     await prisma.meeting.delete({ where: { id: meeting.id } });

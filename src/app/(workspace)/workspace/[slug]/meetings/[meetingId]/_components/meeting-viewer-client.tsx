@@ -51,8 +51,7 @@ function getOptimizedAudioUrl(url: string, shareToken?: string | null): string {
     }
   }
 
-  if (!url.includes("cloudinary.com")) return url;
-  return url.replace("/upload/", "/upload/br_32k,q_auto:eco/");
+  return url;
 }
 
 interface SpeakerPalette {

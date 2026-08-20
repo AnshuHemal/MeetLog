@@ -55,15 +55,21 @@ export async function createMeetingAction(payload: {
     });
   } catch (error: any) {
     console.error("Failed to start Sarvam job for meeting:", meeting.id, error);
-    
+
+    const friendlyError = error.message.includes("No active Sarvam API keys") || error.message.includes("No credits available") || error.message.includes("402")
+      ? "All Sarvam API keys are currently out of credits. Please add fresh keys in Settings > API Key Pool."
+      : error.message;
+
     await prisma.meeting.update({
       where: { id: meeting.id },
       data: {
         status: "FAILED",
+        lastError: friendlyError,
+        progressMessage: `Failed: ${friendlyError}`,
       },
     });
-    
-    throw new Error(`Failed to start Sarvam AI transcription: ${error.message}`);
+
+    throw new Error(friendlyError);
   }
 
   revalidatePath(`/workspace/${payload.workspaceSlug}`);

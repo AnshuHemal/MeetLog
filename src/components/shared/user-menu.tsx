@@ -12,10 +12,13 @@ import {
 } from "@/components/ui/dropdown-menu";
 import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar";
 import { Button } from "@/components/ui/button";
-import { signOut, useSession } from "@/lib/auth-client";
+import React, { useState } from "react";
+import { useSession } from "@/lib/auth-client";
+import { LogoutConfirmationModal } from "@/components/shared/logout-confirmation-modal";
 
 export function UserMenu() {
   const { data: session, isPending } = useSession();
+  const [showLogoutModal, setShowLogoutModal] = useState(false);
 
   if (isPending) {
     return (
@@ -28,80 +31,77 @@ export function UserMenu() {
   const { user } = session;
   const initials = getInitials(user.name ?? user.email);
 
-  async function handleSignOut() {
-    await signOut({
-      fetchOptions: {
-        onSuccess: () => {
-
-          window.location.href = "/";
-        },
-      },
-    });
-  }
-
   return (
-    <DropdownMenu>
-      <DropdownMenuTrigger asChild>
-        <Button
-          variant="ghost"
-          className="flex h-9 items-center gap-2 rounded-full pl-1 pr-2"
-          aria-label="Open user menu"
-        >
-          <Avatar className="size-7">
-            <AvatarImage
-              src={user.image ?? undefined}
-              alt={user.name ?? "User avatar"}
-            />
-            <AvatarFallback className="text-sm font-semibold">
-              {initials}
-            </AvatarFallback>
-          </Avatar>
-          <span className="hidden max-w-28 truncate text-sm font-medium sm:block">
-            {user.name ?? user.email}
-          </span>
-          <ChevronsUpDown className="size-3.5 text-muted-foreground" />
-        </Button>
-      </DropdownMenuTrigger>
+    <>
+      <DropdownMenu>
+        <DropdownMenuTrigger asChild>
+          <Button
+            variant="ghost"
+            className="flex h-9 items-center gap-2 rounded-full pl-1 pr-2 cursor-pointer"
+            aria-label="Open user menu"
+          >
+            <Avatar className="size-7">
+              <AvatarImage
+                src={user.image ?? undefined}
+                alt={user.name ?? "User avatar"}
+              />
+              <AvatarFallback className="text-sm font-semibold">
+                {initials}
+              </AvatarFallback>
+            </Avatar>
+            <span className="hidden max-w-28 truncate text-sm font-medium sm:block">
+              {user.name ?? user.email}
+            </span>
+            <ChevronsUpDown className="size-3.5 text-muted-foreground" />
+          </Button>
+        </DropdownMenuTrigger>
 
-      <DropdownMenuContent align="end" className="w-56" sideOffset={8}>
-        {}
-        <DropdownMenuLabel className="flex flex-col gap-0.5 font-normal">
-          <span className="truncate font-semibold text-foreground">
-            {user.name ?? "User"}
-          </span>
-          <span className="truncate text-sm text-muted-foreground">
-            {user.email}
-          </span>
-        </DropdownMenuLabel>
+        <DropdownMenuContent align="end" className="w-56" sideOffset={8}>
+          {/* User info */}
+          <DropdownMenuLabel className="flex flex-col gap-0.5 font-normal">
+            <span className="truncate font-semibold text-foreground">
+              {user.name ?? "User"}
+            </span>
+            <span className="truncate text-sm text-muted-foreground">
+              {user.email}
+            </span>
+          </DropdownMenuLabel>
 
-        <DropdownMenuSeparator />
+          <DropdownMenuSeparator />
 
-        {}
-        <DropdownMenuItem asChild>
-          <Link href="/dashboard">
-            <LayoutDashboard className="mr-2 size-4" />
-            Dashboard
-          </Link>
-        </DropdownMenuItem>
+          {/* Links */}
+          <DropdownMenuItem asChild>
+            <Link href="/dashboard" className="cursor-pointer">
+              <LayoutDashboard className="mr-2 size-4" />
+              Dashboard
+            </Link>
+          </DropdownMenuItem>
 
-        <DropdownMenuItem asChild>
-          <Link href="/settings">
-            <Settings className="mr-2 size-4" />
-            Settings
-          </Link>
-        </DropdownMenuItem>
+          <DropdownMenuItem asChild>
+            <Link href="/settings" className="cursor-pointer">
+              <Settings className="mr-2 size-4" />
+              Settings
+            </Link>
+          </DropdownMenuItem>
 
-        <DropdownMenuSeparator />
+          <DropdownMenuSeparator />
 
-        <DropdownMenuItem
-          onClick={handleSignOut}
-          className="text-destructive focus:text-destructive"
-        >
-          <LogOut className="mr-2 size-4" />
-          Sign out
-        </DropdownMenuItem>
-      </DropdownMenuContent>
-    </DropdownMenu>
+          <DropdownMenuItem
+            onClick={() => setShowLogoutModal(true)}
+            className="text-destructive focus:text-destructive cursor-pointer"
+          >
+            <LogOut className="mr-2 size-4" />
+            Sign out
+          </DropdownMenuItem>
+        </DropdownMenuContent>
+      </DropdownMenu>
+
+      <LogoutConfirmationModal
+        open={showLogoutModal}
+        onClose={() => setShowLogoutModal(false)}
+        user={user}
+      />
+    </>
   );
 }
 

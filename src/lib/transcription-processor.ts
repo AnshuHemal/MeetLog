@@ -1,5 +1,12 @@
 import { prisma } from "@/lib/prisma";
-import { getSarvamJobStatus, downloadSarvamJobTranscript, startSarvamTranscriptionJob } from "@/lib/sarvam";
+import {
+  getSarvamJobStatus,
+  downloadSarvamJobTranscript,
+  startSarvamTranscriptionJob,
+  isMultiPartSarvamJob,
+  parseMultiPartSarvamJob,
+  SarvamTranscriptSegment,
+} from "@/lib/sarvam";
 import { generateMeetingInsights, generateMeetingChapters } from "@/lib/gemini";
 import { collectUniqueSpeakerIds, normalizeSpeakerId } from "@/lib/speaker-id";
 import { notifyMeetingFailed } from "@/lib/dead-letter";
@@ -58,27 +65,88 @@ export async function processCompletedTranscription(meetingId: string) {
 
   try {
     await updateProgressMessage(meetingId, "Initializing transcription processing pipeline...");
-    const jsonOutput = await waitForOutputFiles(meetingId, meeting.sarvamJobId);
+    const combinedEntries: SarvamTranscriptSegment[] = [];
 
-    await updateProgressMessage(meetingId, "Downloading transcript outputs from Sarvam AI...");
-    const rawResult = await downloadSarvamJobTranscript(
-      meeting.sarvamJobId,
-      jsonOutput.file_name,
-    );
+    // Handle Multi-Part (>2 Hours) Jobs
+    if (isMultiPartSarvamJob(meeting.sarvamJobId)) {
+      const multiPart = parseMultiPartSarvamJob(meeting.sarvamJobId)!;
+      log(`Meeting has ${multiPart.parts.length} sliced sub-parts. Processing each in sequence...`);
 
-    if (!rawResult.diarized_transcript?.entries) {
-      throw new Error("Invalid transcript JSON format: missing entries.");
+      for (const part of multiPart.parts) {
+        await updateProgressMessage(
+          meetingId,
+          `Retrieving Sarvam AI outputs for Part ${part.partIndex}/${part.totalParts}...`
+        );
+
+        const jsonOutput = await waitForOutputFiles(meetingId, part.jobId);
+
+        await updateProgressMessage(
+          meetingId,
+          `Downloading transcript for Part ${part.partIndex}/${part.totalParts}...`
+        );
+
+        const rawResult = await downloadSarvamJobTranscript(
+          part.jobId,
+          jsonOutput.file_name
+        );
+
+        if (rawResult.diarized_transcript?.entries) {
+          for (const entry of rawResult.diarized_transcript.entries) {
+            const rawStart = parseFloat(entry.start_time_seconds?.toString() || "0");
+            const rawEnd = parseFloat(entry.end_time_seconds?.toString() || "0");
+            const shiftedStart = (isNaN(rawStart) ? 0 : rawStart) + part.startOffsetSeconds;
+            const shiftedEnd = (isNaN(rawEnd) ? 0 : rawEnd) + part.startOffsetSeconds;
+
+            const speakerTag = `P${part.partIndex}-${normalizeSpeakerId(entry.speaker_id)}`;
+
+            combinedEntries.push({
+              speaker_id: speakerTag,
+              start_time_seconds: Math.round(shiftedStart * 100) / 100,
+              end_time_seconds: Math.round(shiftedEnd * 100) / 100,
+              transcript: entry.transcript,
+            });
+          }
+        }
+      }
+    } else {
+      // Single Part (<2 Hours) Job
+      const jsonOutput = await waitForOutputFiles(meetingId, meeting.sarvamJobId);
+
+      await updateProgressMessage(meetingId, "Downloading transcript outputs from Sarvam AI...");
+      const rawResult = await downloadSarvamJobTranscript(
+        meeting.sarvamJobId,
+        jsonOutput.file_name
+      );
+
+      if (!rawResult.diarized_transcript?.entries) {
+        throw new Error("Invalid transcript JSON format: missing entries.");
+      }
+
+      for (const entry of rawResult.diarized_transcript.entries) {
+        combinedEntries.push({
+          speaker_id: normalizeSpeakerId(entry.speaker_id),
+          start_time_seconds: entry.start_time_seconds,
+          end_time_seconds: entry.end_time_seconds,
+          transcript: entry.transcript,
+        });
+      }
     }
 
-    const entries = rawResult.diarized_transcript.entries;
-    log(`Downloaded ${entries.length} transcript entries.`);
+    // Sort chronologically across all merged slices
+    combinedEntries.sort((a, b) => {
+      const aStart = parseFloat(a.start_time_seconds?.toString() || "0");
+      const bStart = parseFloat(b.start_time_seconds?.toString() || "0");
+      return aStart - bStart;
+    });
+
+    log(`Total combined transcript entries: ${combinedEntries.length}`);
 
     await updateProgressMessage(meetingId, "Formatting and saving transcript entries to database...");
-    await writeTranscriptSegments(meetingId, entries);
+    await writeTranscriptSegments(meetingId, combinedEntries);
 
-    await generateAIInsights(meetingId, entries);
+    await generateAIInsights(meetingId, combinedEntries);
 
-    const maxSegmentDuration = entries.reduce((max, entry) => {
+    const maxSegmentDuration = combinedEntries.reduce((max, entry) => {
       const end = parseFloat(entry.end_time_seconds?.toString() || "0");
       return Math.max(max, isNaN(end) ? 0 : end);
     }, 0);
@@ -98,6 +166,12 @@ export async function processCompletedTranscription(meetingId: string) {
     log(`Meeting ${meetingId} processed successfully! (Duration: ${maxSegmentDuration}s)`);
   } catch (error: any) {
     log(`ERROR processing meeting ${meetingId}: ${error.message}`);
+
+    // If audio is rejected for exceeding length or format validation, fail immediately without endless retrying
+    if (error.message.includes("exceeds the maximum limit") || error.message.includes("duration exceeds") || error.message.includes("limit of 7200 seconds")) {
+      await markAsFailed(meetingId, "Audio duration exceeds Sarvam's maximum limit of 2 hours (7200 seconds). Please upload audio under 2 hours.");
+      return;
+    }
 
     const isFatalJobError =
       error.message.includes("Job state is Failed") ||
@@ -169,16 +243,25 @@ async function waitForOutputFiles(meetingId: string, jobId: string) {
     );
 
     const jobDetails = await getSarvamJobStatus(jobId);
-    const outputs = jobDetails.job_details?.[0]?.outputs ?? [];
+    const detail = jobDetails.job_details?.[0];
+    const outputs = detail?.outputs ?? [];
     const state = jobDetails.job_state;
+    const itemState = detail?.state;
+    const itemError = detail?.error_message;
 
-    log(`Job state: ${state}, outputs count: ${outputs.length}`);
+    log(`Job state: ${state}, item state: ${itemState || "N/A"}, failed files: ${jobDetails.failed_files_count ?? 0}`);
 
     if (state === "Failed") {
       throw new Error(`Job state is Failed on Sarvam AI: ${jobDetails.error_message || "Unknown error"}`);
     }
 
-    if (outputs.length > 0) {
+    if (itemState === "API Error" || itemState === "Failed" || (jobDetails.failed_files_count && jobDetails.failed_files_count > 0 && outputs.length === 0)) {
+      const msg = itemError || jobDetails.error_message || "Sarvam AI rejected audio processing.";
+      throw new Error(`Sarvam AI audio processing error: ${msg}`);
+    }
+
+    // Check if output files actually succeeded
+    if (outputs.length > 0 && itemState !== "API Error") {
       const jsonOutput = outputs.find((o: any) => o.file_name?.endsWith(".json"));
       if (jsonOutput) {
         log(`Found output file: ${jsonOutput.file_name} (file_id: ${jsonOutput.file_id})`);
@@ -215,69 +298,78 @@ async function writeTranscriptSegments(
     transcript: string;
   }>,
 ) {
-  await prisma.$transaction(async (tx) => {
-    try {
-      await tx.meeting.update({
-        where: { id: meetingId },
-        data: {
-          numSpeakers: collectUniqueSpeakerIds(entries).length,
-        },
-      });
-    } catch {
-      // ignore
-    }
+  const uniqueSpeakers = collectUniqueSpeakerIds(entries);
 
-    await tx.transcriptSegment.deleteMany({
-      where: { meetingId },
-    });
-
-    const segmentsData = entries.map((entry, index) => {
-      const start = parseFloat(entry.start_time_seconds?.toString() || "0");
-      const end = parseFloat(entry.end_time_seconds?.toString() || "0");
-
-      return {
-        meetingId,
-        speakerId: normalizeSpeakerId(entry.speaker_id),
-        startTime: isNaN(start) ? 0 : start,
-        endTime: isNaN(end) ? 0 : end,
-        text: entry.transcript || "",
-        index,
-      };
-    });
-
-    if (segmentsData.length > 0) {
-      await tx.transcriptSegment.createMany({
-        data: segmentsData,
-      });
-    }
-
-    const uniqueSpeakers = collectUniqueSpeakerIds(entries);
-    for (const speakerId of uniqueSpeakers) {
-      const existingLabel = await tx.speakerLabel.findUnique({
-        where: {
-          meetingId_speakerId: {
-            meetingId,
-            speakerId,
-          },
-        },
-      });
-
-      if (!existingLabel) {
-        const speakerNum = parseInt(speakerId.replace(/\D/g, ""), 10);
-        const displayName = isNaN(speakerNum)
-          ? speakerId
-          : `Speaker ${speakerNum + 1}`;
-
-        await tx.speakerLabel.create({
+  await prisma.$transaction(
+    async (tx) => {
+      try {
+        await tx.meeting.update({
+          where: { id: meetingId },
           data: {
+            numSpeakers: uniqueSpeakers.length,
+          },
+        });
+      } catch {
+        // ignore
+      }
+
+      await tx.transcriptSegment.deleteMany({
+        where: { meetingId },
+      });
+
+      const segmentsData = entries.map((entry, index) => {
+        const start = parseFloat(entry.start_time_seconds?.toString() || "0");
+        const end = parseFloat(entry.end_time_seconds?.toString() || "0");
+
+        return {
+          meetingId,
+          speakerId: normalizeSpeakerId(entry.speaker_id),
+          startTime: isNaN(start) ? 0 : start,
+          endTime: isNaN(end) ? 0 : end,
+          text: entry.transcript || "",
+          index,
+        };
+      });
+
+      // Insert segments in 500-item chunks for optimal database throughput
+      const CHUNK_SIZE = 500;
+      for (let i = 0; i < segmentsData.length; i += CHUNK_SIZE) {
+        const chunk = segmentsData.slice(i, i + CHUNK_SIZE);
+        await tx.transcriptSegment.createMany({
+          data: chunk,
+        });
+      }
+
+      // Fetch all existing labels in 1 query
+      const existingLabels = await tx.speakerLabel.findMany({
+        where: { meetingId },
+        select: { speakerId: true },
+      });
+      const existingSet = new Set(existingLabels.map((l) => l.speakerId));
+
+      const newSpeakerLabels = uniqueSpeakers
+        .filter((speakerId) => !existingSet.has(speakerId))
+        .map((speakerId) => {
+          const speakerNum = parseInt(speakerId.replace(/\D/g, ""), 10);
+          const displayName = isNaN(speakerNum) ? speakerId : `Speaker ${speakerNum + 1}`;
+          return {
             meetingId,
             speakerId,
             displayName,
-          },
+          };
+        });
+
+      if (newSpeakerLabels.length > 0) {
+        await tx.speakerLabel.createMany({
+          data: newSpeakerLabels,
         });
       }
+    },
+    {
+      timeout: 30000,
+      maxWait: 10000,
     }
-  });
+  );
 
   log(`Successfully wrote ${entries.length} segments and speaker labels to database.`);
 }
@@ -306,30 +398,36 @@ async function generateAIInsights(
   try {
     const insights = await generateMeetingInsights(fullTranscript);
 
-    await prisma.$transaction(async (tx) => {
-      await tx.meeting.update({
-        where: { id: meetingId },
-        data: {
-          summaryMarkdown: insights.summary,
-        },
-      });
-
-      if (insights.actionItems && insights.actionItems.length > 0) {
-        await tx.actionItem.deleteMany({
-          where: { meetingId },
+    await prisma.$transaction(
+      async (tx) => {
+        await tx.meeting.update({
+          where: { id: meetingId },
+          data: {
+            summaryMarkdown: insights.summary,
+          },
         });
 
-        await tx.actionItem.createMany({
-          data: insights.actionItems.map((item) => ({
-            meetingId,
-            taskDescription: item.task,
-            assigneeName: item.assignee || null,
-            priority: "MEDIUM",
-            status: "PENDING",
-          })),
-        });
+        if (insights.actionItems && insights.actionItems.length > 0) {
+          await tx.actionItem.deleteMany({
+            where: { meetingId },
+          });
+
+          await tx.actionItem.createMany({
+            data: insights.actionItems.map((item) => ({
+              meetingId,
+              taskDescription: item.task,
+              assigneeName: item.assignee || null,
+              priority: "MEDIUM",
+              status: "PENDING",
+            })),
+          });
+        }
+      },
+      {
+        timeout: 30000,
+        maxWait: 10000,
       }
-    });
+    );
 
     log(`AI Insights saved. Summary length: ${insights.summary.length}, Action items: ${insights.actionItems.length}`);
   } catch (err: any) {

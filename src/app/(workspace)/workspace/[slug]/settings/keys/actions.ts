@@ -137,33 +137,60 @@ export async function testPoolKeyAction(workspaceSlug: string, keyId: string) {
 
     if (record.provider === "SARVAM") {
       try {
-        const res = await axios.get("https://api.sarvam.ai/speech-to-text/job/v1/ping-test-status", {
-          headers: { "api-subscription-key": record.key },
-          validateStatus: () => true,
-        });
+        const res = await axios.post(
+          "https://api.sarvam.ai/translate",
+          {
+            input: "hi",
+            source_language_code: "en-IN",
+            target_language_code: "hi-IN",
+            mode: "formal",
+          },
+          {
+            headers: {
+              "api-subscription-key": record.key,
+              "Content-Type": "application/json",
+            },
+            validateStatus: () => true,
+            timeout: 8000,
+          }
+        );
 
-        if (res.status === 401 || res.status === 403) {
+        if (res.status === 200) {
           await prisma.apiKeyPool.update({
             where: { id: keyId },
             data: {
-              status: "EXHAUSTED",
-              lastError: "Expired or Invalid API Key (HTTP 401/403)",
-              errorCount: { increment: 1 },
+              status: "ACTIVE",
+              lastError: null,
+              rateLimitResetAt: null,
             },
           });
-          return { success: false, status: "EXHAUSTED", error: "Authentication failed. Key is expired or invalid." };
+          return { success: true, status: "ACTIVE", message: "Key validated successfully! Active with available credits." };
         }
 
-        if (res.status === 402) {
+        if (res.status === 402 || (res.data?.error?.code === "insufficient_quota_error")) {
+          const msg = res.data?.error?.message || "No credits available / Quota exhausted (HTTP 402)";
           await prisma.apiKeyPool.update({
             where: { id: keyId },
             data: {
               status: "EXHAUSTED",
-              lastError: "Quota / Credits Exhausted (HTTP 402)",
+              lastError: msg,
               errorCount: { increment: 1 },
             },
           });
-          return { success: false, status: "EXHAUSTED", error: "Payment required: Credits exhausted on this key." };
+          return { success: false, status: "EXHAUSTED", error: msg };
+        }
+
+        if (res.status === 401 || res.status === 403) {
+          const msg = res.data?.error?.message || "Expired or Invalid API Key (HTTP 401/403)";
+          await prisma.apiKeyPool.update({
+            where: { id: keyId },
+            data: {
+              status: "EXHAUSTED",
+              lastError: msg,
+              errorCount: { increment: 1 },
+            },
+          });
+          return { success: false, status: "EXHAUSTED", error: msg };
         }
 
         if (res.status === 429) {
@@ -180,16 +207,7 @@ export async function testPoolKeyAction(workspaceSlug: string, keyId: string) {
           return { success: false, status: "RATE_LIMITED", error: "Rate limit reached on this key." };
         }
 
-        await prisma.apiKeyPool.update({
-          where: { id: keyId },
-          data: {
-            status: "ACTIVE",
-            lastError: null,
-            rateLimitResetAt: null,
-          },
-        });
-
-        return { success: true, status: "ACTIVE", message: "Key validated successfully with Sarvam AI!" };
+        return { success: false, error: `Unexpected Sarvam status: ${res.status}` };
       } catch (err: any) {
         return { success: false, error: err.message || "Failed to connect to Sarvam AI." };
       }
@@ -230,39 +248,56 @@ export async function testAllPoolKeysAction(workspaceSlug: string) {
     for (const keyRecord of keys) {
       if (keyRecord.provider === "SARVAM") {
         try {
-          const res = await axios.get("https://api.sarvam.ai/speech-to-text/job/v1/ping-test-status", {
-            headers: { "api-subscription-key": keyRecord.key },
-            validateStatus: () => true,
-          });
+          const res = await axios.post(
+            "https://api.sarvam.ai/translate",
+            {
+              input: "hi",
+              source_language_code: "en-IN",
+              target_language_code: "hi-IN",
+              mode: "formal",
+            },
+            {
+              headers: {
+                "api-subscription-key": keyRecord.key,
+                "Content-Type": "application/json",
+              },
+              validateStatus: () => true,
+              timeout: 8000,
+            }
+          );
 
-          if (res.status === 401 || res.status === 403) {
+          if (res.status === 200) {
+            await prisma.apiKeyPool.update({
+              where: { id: keyRecord.id },
+              data: { status: "ACTIVE", lastError: null, rateLimitResetAt: null },
+            });
+            results[keyRecord.id] = { success: true, status: "ACTIVE", msg: "Active" };
+          } else if (res.status === 402 || (res.data?.error?.code === "insufficient_quota_error")) {
+            const msg = res.data?.error?.message || "No credits available";
             await prisma.apiKeyPool.update({
               where: { id: keyRecord.id },
               data: {
                 status: "EXHAUSTED",
-                lastError: "Expired or Invalid API Key",
+                lastError: msg,
                 errorCount: { increment: 1 },
               },
             });
-            results[keyRecord.id] = { success: false, status: "EXHAUSTED", msg: "Expired / Invalid" };
-          } else if (res.status === 402) {
+            results[keyRecord.id] = { success: false, status: "EXHAUSTED", msg };
+          } else if (res.status === 401 || res.status === 403) {
+            const msg = res.data?.error?.message || "Expired / Invalid";
             await prisma.apiKeyPool.update({
               where: { id: keyRecord.id },
               data: {
                 status: "EXHAUSTED",
-                lastError: "Quota Exhausted",
+                lastError: msg,
                 errorCount: { increment: 1 },
               },
             });
-            results[keyRecord.id] = { success: false, status: "EXHAUSTED", msg: "Quota Exhausted" };
+            results[keyRecord.id] = { success: false, status: "EXHAUSTED", msg };
           } else if (res.status === 429) {
             results[keyRecord.id] = { success: false, status: "RATE_LIMITED", msg: "Rate Limited" };
           } else {
-            await prisma.apiKeyPool.update({
-              where: { id: keyRecord.id },
-              data: { status: "ACTIVE", lastError: null },
-            });
-            results[keyRecord.id] = { success: true, status: "ACTIVE", msg: "Active" };
+            results[keyRecord.id] = { success: false, status: keyRecord.status, msg: `HTTP ${res.status}` };
           }
         } catch {
           results[keyRecord.id] = { success: false, status: keyRecord.status, msg: "Network Error" };

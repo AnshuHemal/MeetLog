@@ -186,7 +186,10 @@ export async function deletePoolKey(id: string) {
 export async function togglePoolKeyStatus(id: string, status: "ACTIVE" | "DISABLED") {
   return await prisma.apiKeyPool.update({
     where: { id },
-    data: { status },
+    data: {
+      status,
+      ...(status === "ACTIVE" ? { lastError: null, rateLimitResetAt: null } : {}),
+    },
   });
 }
 

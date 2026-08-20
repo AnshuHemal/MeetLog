@@ -124,12 +124,12 @@ export default function HomePage() {
                         <span className="text-xs font-bold text-foreground">John Doe (Speaker 2)</span>
                         <span className="text-[10px] text-primary bg-primary/10 px-1 rounded">00:15</span>
                       </div>
-                      <p className="text-xs text-muted-foreground mt-1">I have implemented the Cloudinary direct signature endpoints. It is performing signed chunked uploads cleanly.</p>
+                      <p className="text-xs text-muted-foreground mt-1">I have implemented the Google Drive chunked resumable upload endpoints. It is performing multi-part uploads cleanly.</p>
                     </div>
                   </div>
                 </div>
 
-                {}
+                {/* Simulated Actions */}
                 <div className="w-[200px] border-l border-border bg-muted/5 p-4 space-y-4 hidden md:block">
                   <div className="h-5 border-b border-border text-[10px] font-bold text-foreground">AI Action Items</div>
                   <div className="space-y-2">
@@ -149,7 +149,7 @@ export default function HomePage() {
         </FadeIn>
       </section>
 
-      {}
+      {/* Feature Grid */}
       <section className="px-6 py-20 bg-muted/20 w-full flex flex-col items-center">
         <div className="max-w-5xl w-full">
           <div className="text-center mb-16">
@@ -160,7 +160,7 @@ export default function HomePage() {
           </div>
 
           <div className="grid grid-cols-1 gap-6 sm:grid-cols-2 lg:grid-cols-3">
-            {}
+            {/* Feature 1 */}
             <div className="rounded-xl border border-border bg-card p-6 flex flex-col">
               <div className="flex size-9 items-center justify-center rounded-lg bg-primary/10 text-primary mb-4">
                 <UserCheck className="size-5" />
@@ -171,7 +171,7 @@ export default function HomePage() {
               </p>
             </div>
 
-            {}
+            {/* Feature 2 */}
             <div className="rounded-xl border border-border bg-card p-6 flex flex-col">
               <div className="flex size-9 items-center justify-center rounded-lg bg-primary/10 text-primary mb-4">
                 <Play className="size-5 fill-current" />
@@ -182,7 +182,7 @@ export default function HomePage() {
               </p>
             </div>
 
-            {}
+            {/* Feature 3 */}
             <div className="rounded-xl border border-border bg-card p-6 flex flex-col">
               <div className="flex size-9 items-center justify-center rounded-lg bg-primary/10 text-primary mb-4">
                 <ClipboardCheck className="size-5" />
@@ -196,7 +196,7 @@ export default function HomePage() {
         </div>
       </section>
 
-      {}
+      {/* How it Works */}
       <section id="how-it-works" className="px-6 py-20 w-full flex flex-col items-center">
         <div className="max-w-5xl w-full">
           <div className="text-center mb-16">
@@ -209,9 +209,9 @@ export default function HomePage() {
           <div className="grid grid-cols-1 sm:grid-cols-3 gap-8 relative">
             <div className="flex flex-col items-center text-center">
               <div className="flex size-10 items-center justify-center rounded-full bg-primary text-primary-foreground font-bold text-sm mb-4">1</div>
-              <h3 className="font-semibold text-base text-foreground">Direct Signed Upload</h3>
+              <h3 className="font-semibold text-base text-foreground">Direct Resumable Upload</h3>
               <p className="text-sm text-muted-foreground mt-2 leading-relaxed">
-                Upload raw meeting recordings directly to Cloudinary. Bypasses backend delays and file size timeouts.
+                Upload raw meeting recordings directly to Google Drive. Bypasses backend delays and file size timeouts.
               </p>
             </div>
 
