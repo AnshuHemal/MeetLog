@@ -99,9 +99,24 @@ class SarvamProvisioner:
             timezone_id="Asia/Kolkata",
             permissions=["clipboard-read", "clipboard-write"],
         )
-        await context.add_init_script(
-            "Object.defineProperty(navigator, 'webdriver', { get: () => undefined });"
-        )
+        await context.add_init_script("""
+            Object.defineProperty(navigator, 'webdriver', { get: () => undefined });
+            window.__meetlog_captured_keys = window.__meetlog_captured_keys || [];
+
+            if (navigator.clipboard) {
+                const origWrite = navigator.clipboard.writeText;
+                navigator.clipboard.writeText = async function(text) {
+                    if (text && typeof text === 'string' && text.includes('sk_')) {
+                        window.__meetlog_captured_keys.push(text.trim());
+                    }
+                    try {
+                        return await origWrite.apply(this, arguments);
+                    } catch (e) {
+                        return Promise.resolve();
+                    }
+                };
+            }
+        """)
         page = await context.new_page()
 
         try:
@@ -189,11 +204,80 @@ class SarvamProvisioner:
             logger.error(f"OTP verification error: {e}")
             return False
 
-    async def generate_api_key(self, page: Page, context=None, log_cb=None) -> Optional[str]:
+    async def generate_api_key(self, page: Page, context=None, log_cb=None) -> Optional[list[str]]:
         async def log(msg: str):
             logger.info(msg)
             if log_cb:
                 await log_cb({"type": "log", "line": msg})
+
+        network_captured_keys: list[str] = []
+
+        async def on_response(resp):
+            try:
+                if "sarvam.ai" in resp.url and resp.status in (200, 201):
+                    ct = resp.headers.get("content-type", "")
+                    if "json" in ct or "text" in ct:
+                        body_txt = await resp.text()
+                        import re
+                        for m in re.findall(r'\b(sk_[a-zA-Z0-9_-]{20,80})\b', body_txt):
+                            if m not in network_captured_keys and not "*" in m:
+                                network_captured_keys.append(m)
+                                logger.info(f"Captured secret key from network API response: {m[:8]}...{m[-4:]}")
+            except Exception:
+                pass
+
+        page.on("response", on_response)
+
+        async def extract_current_keys() -> list[str]:
+            found: list[str] = []
+            # 1. From network listener
+            for k in network_captured_keys:
+                if k and k.startswith("sk_") and not "*" in k and k not in found:
+                    found.append(k)
+
+            # 2. From window.__meetlog_captured_keys hook
+            try:
+                hooked = await page.evaluate("() => window.__meetlog_captured_keys || []")
+                for k in hooked:
+                    if k and k.startswith("sk_") and not "*" in k and k not in found:
+                        found.append(k)
+            except Exception:
+                pass
+
+            # 3. From clipboard
+            try:
+                cb = await page.evaluate("navigator.clipboard ? navigator.clipboard.readText() : null")
+                if cb and cb.strip().startswith("sk_") and not "*" in cb and cb.strip() not in found:
+                    found.append(cb.strip())
+            except Exception:
+                pass
+
+            # 4. From DOM elements
+            try:
+                dom_keys = await page.evaluate("""
+                    () => {
+                        const res = [];
+                        for (const el of document.querySelectorAll("input, textarea, code, pre, p, span, div")) {
+                            const val = (el.value || el.innerText || "").trim();
+                            if (val.startsWith("sk_") && val.length >= 24 && !val.includes("*")) {
+                                res.push(val);
+                            }
+                        }
+                        const fullText = document.body.innerText || "";
+                        const matches = fullText.match(/\\b(sk_[a-zA-Z0-9_-]{20,80})\\b/g) || [];
+                        for (const m of matches) {
+                            if (!m.includes("*")) res.push(m);
+                        }
+                        return res;
+                    }
+                """)
+                for k in dom_keys:
+                    if k and k.startswith("sk_") and not "*" in k and k not in found:
+                        found.append(k)
+            except Exception:
+                pass
+
+            return found
 
         # 1. Complete onboarding wizard cleanly
         if "onboarding" in page.url:
@@ -204,49 +288,51 @@ class SarvamProvisioner:
                 if await dev_loc.count() > 0 and await dev_loc.is_visible():
                     await dev_loc.click()
                     await log("Selected 'Developer' role.")
-                    await self._human_delay(400, 800)
+                    await self._human_delay(300, 600)
 
                 # Goal: Sarvam API
                 api_loc = page.locator("text='Sarvam API'").first
                 if await api_loc.count() > 0 and await api_loc.is_visible():
                     await api_loc.click()
                     await log("Selected 'Sarvam API' goal.")
-                    await self._human_delay(400, 800)
+                    await self._human_delay(300, 600)
 
                 # Continue to Sarvam API
                 cont_btn = page.locator("button:has-text('Continue to Sarvam API'), button:has-text('Continue'), button:has-text('Get Started')").first
                 if await cont_btn.count() > 0 and await cont_btn.is_visible():
                     await cont_btn.click()
                     await log("Submitted onboarding choices.")
-                    await self._human_delay(1500, 2500)
+                    await self._human_delay(1200, 2000)
             except Exception as e:
                 logger.warning(f"Onboarding flow warning: {e}")
 
         keys_found: list[str] = []
 
-        # 2. Fast Capture of initial API key from welcome modal ("Here is your first API key to get started")
+        # 2. Capture initial API key from welcome modal ("Here is your first API key to get started")
         await log("Capturing initial welcome API key...")
-        await self._human_delay(800, 1500)
+        await self._human_delay(600, 1200)
 
+        # Trigger copy button on welcome modal
         try:
             copy_btn = page.locator("button:has-text('Copy'), [aria-label*='copy' i], svg[class*='copy' i]").first
             if await copy_btn.count() > 0 and await copy_btn.is_visible():
                 await copy_btn.click()
                 await asyncio.sleep(0.3)
-                cb_text = await page.evaluate("navigator.clipboard.readText()")
-                if cb_text and cb_text.strip().startswith("sk_") and not "*" in cb_text:
-                    k1 = cb_text.strip()
-                    keys_found.append(k1)
-                    await log(f"Captured initial API Key #1: {k1[:8]}...{k1[-4:]}")
         except Exception:
             pass
+
+        # Check extracted keys
+        for k in await extract_current_keys():
+            if k not in keys_found:
+                keys_found.append(k)
+                await log(f"Captured initial API Key #1: {k[:8]}...{k[-4:]}")
 
         # Close welcome modal by clicking "I have saved it"
         try:
             saved_btn = page.locator("button:has-text('I have saved it'), button:has-text('Done'), button:has-text('Close')").first
             if await saved_btn.count() > 0 and await saved_btn.is_visible():
                 await saved_btn.click()
-                await self._human_delay(400, 800)
+                await self._human_delay(300, 600)
             else:
                 await page.evaluate("""
                     () => {
@@ -260,7 +346,7 @@ class SarvamProvisioner:
                         return false;
                     }
                 """)
-                await self._human_delay(400, 800)
+                await self._human_delay(300, 600)
         except Exception:
             pass
 
@@ -268,25 +354,23 @@ class SarvamProvisioner:
         await log("Navigating to https://indus.sarvam.ai/key-management...")
         try:
             await page.goto("https://indus.sarvam.ai/key-management", wait_until="domcontentloaded", timeout=20000)
-            await self._human_delay(1000, 1800)
+            await self._human_delay(800, 1500)
         except Exception as e:
             await log(f"Navigation warning: {e}")
 
-        # 4. If no initial key was found, try copying existing default key from table
+        # 4. If no initial key was found yet, check table copy button
         if len(keys_found) == 0:
             try:
                 copy_btn = page.locator("button:has-text('Copy'), [aria-label*='copy' i], svg[class*='copy' i]").first
                 if await copy_btn.count() > 0 and await copy_btn.is_visible():
                     await copy_btn.click()
                     await asyncio.sleep(0.3)
-                    cb_text = await page.evaluate("navigator.clipboard.readText()")
-                    if cb_text and cb_text.strip().startswith("sk_") and not "*" in cb_text:
-                        table_key = cb_text.strip()
-                        if table_key not in keys_found:
-                            keys_found.append(table_key)
-                            await log(f"Captured table default Key #1: {table_key[:8]}...{table_key[-4:]}")
             except Exception:
                 pass
+            for k in await extract_current_keys():
+                if k not in keys_found:
+                    keys_found.append(k)
+                    await log(f"Captured table default Key #1: {k[:8]}...{k[-4:]}")
 
         # 5. Fast Click "+ Create API Key" to generate second key
         key_name = f"meetlog-pool-{random.randint(1000, 9999)}"
@@ -310,7 +394,7 @@ class SarvamProvisioner:
         except Exception:
             pass
 
-        await self._human_delay(400, 800)
+        await self._human_delay(300, 600)
 
         # 6. Fast Fill name in dialog
         await log(f"Entering API key name: {key_name}...")
@@ -360,7 +444,7 @@ class SarvamProvisioner:
                 }
             """)
 
-        await self._human_delay(1000, 1800)
+        await self._human_delay(800, 1500)
 
         # 8. Extract unmasked secondary API key
         await log("Extracting secondary API key...")
@@ -370,35 +454,16 @@ class SarvamProvisioner:
                 if await copy_btn.count() > 0 and await copy_btn.is_visible():
                     await copy_btn.click()
                     await asyncio.sleep(0.3)
-                    cb_text = await page.evaluate("navigator.clipboard.readText()")
-                    if cb_text and cb_text.strip().startswith("sk_") and not "*" in cb_text:
-                        if cb_text.strip() not in keys_found:
-                            k2 = cb_text.strip()
-                            keys_found.append(k2)
-                            await log(f"Captured secondary API Key #2: {k2[:8]}...{k2[-4:]}")
-                            break
             except Exception:
                 pass
 
-            try:
-                extracted_token = await page.evaluate("""
-                    () => {
-                        for (const el of document.querySelectorAll("input, textarea, code, pre")) {
-                            let val = (el.value || el.innerText || "").trim();
-                            if (val.startsWith("sk_") && val.length >= 24 && !val.includes("*")) return val;
-                        }
-                        const fullText = document.body.innerText || "";
-                        const match = fullText.match(/\\b(sk_[a-zA-Z0-9_-]{20,80})\\b/);
-                        if (match && !match[1].includes("*")) return match[1];
-                        return null;
-                    }
-                """)
-                if extracted_token and extracted_token not in keys_found:
-                    keys_found.append(extracted_token)
-                    await log(f"Captured secondary API Key #2: {extracted_token[:8]}...{extracted_token[-4:]}")
-                    break
-            except Exception:
-                pass
+            curr_extracted = await extract_current_keys()
+            new_keys = [k for k in curr_extracted if k not in keys_found]
+            if new_keys:
+                k2 = new_keys[0]
+                keys_found.append(k2)
+                await log(f"Captured secondary API Key #2: {k2[:8]}...{k2[-4:]}")
+                break
 
             await asyncio.sleep(0.5)
 
@@ -420,7 +485,7 @@ class SarvamProvisioner:
                         return false;
                     }
                 """)
-            await self._human_delay(300, 600)
+            await self._human_delay(200, 500)
         except Exception:
             pass
 
