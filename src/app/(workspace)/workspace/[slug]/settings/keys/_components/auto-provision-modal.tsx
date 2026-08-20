@@ -19,9 +19,6 @@ import {
   Radio,
   Layers,
   Copy,
-  Monitor,
-  Globe,
-  Lock,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { getBoomlifyCreditStatsAction } from "../actions";
@@ -140,8 +137,9 @@ export function AutoProvisionModal({
         let errDetail = `Server returned status ${response.status}`;
         try {
           const errJson = await response.json();
-          if (errJson.error) errDetail = errJson.error;
-        } catch {}
+          if (errJson?.error) errDetail = errJson.error;
+        } catch {
+        }
         throw new Error(errDetail);
       }
 
@@ -150,8 +148,11 @@ export function AutoProvisionModal({
       let buffer = "";
 
       while (true) {
-        const { value, done } = await reader.read();
-        if (done) break;
+        const { done, value } = await reader.read();
+        if (done) {
+          setPhase("completed");
+          break;
+        }
 
         buffer += decoder.decode(value, { stream: true });
         const normalized = buffer.replace(/\r\n/g, "\n");
@@ -217,9 +218,13 @@ export function AutoProvisionModal({
   const handleStop = () => {
     if (abortControllerRef.current) {
       abortControllerRef.current.abort();
-      setPhase("completed");
-      setErrorMsg("Process manually halted.");
     }
+    setPhase("completed");
+    setErrorMsg("Execution halted by user.");
+    setLogs((prev) => [
+      ...prev,
+      { line: "[STOPPED] Provisioner execution immediately halted by user.", isError: true, timestamp: new Date().toLocaleTimeString() },
+    ]);
   };
 
   const handleCopyOtp = () => {
@@ -478,7 +483,7 @@ export function AutoProvisionModal({
                   </div>
                 </div>
 
-                {}
+                {/* Step List */}
                 <div className="p-5 rounded-2xl bg-card border border-border shadow-xs space-y-3">
                   <h4 className="text-xs font-bold uppercase tracking-wider text-muted-foreground flex items-center gap-2">
                     <Layers className="size-3.5 text-primary" /> Automation Pipeline Steps
@@ -490,7 +495,7 @@ export function AutoProvisionModal({
                         id: "create_email",
                         label: "1. Temporary Disposable Inbox",
                         sub: "Boomlify temporary email creation",
-                        active: ["create_email", "email_created"].includes(currentStep),
+                        active: ["create_email", "email_created"].includes(currentStep) && phase === "running",
                         done: [
                           "navigating",
                           "form_submitted",
@@ -499,38 +504,38 @@ export function AutoProvisionModal({
                           "onboarding_goal",
                           "key_extracted",
                           "key_saved",
-                        ].includes(currentStep),
+                        ].includes(currentStep) || (phase === "completed" && !errorMsg),
                       },
                       {
                         id: "register",
                         label: "2. Sarvam Registration Portal",
                         sub: "Submits Name, Email, and Password",
-                        active: ["navigating", "form_submitted"].includes(currentStep),
+                        active: ["navigating", "form_submitted"].includes(currentStep) && phase === "running",
                         done: [
                           "otp_received",
                           "onboarding_role",
                           "onboarding_goal",
                           "key_extracted",
                           "key_saved",
-                        ].includes(currentStep),
+                        ].includes(currentStep) || (phase === "completed" && !errorMsg),
                       },
                       {
                         id: "otp",
                         label: "3. Email OTP Interception",
                         sub: "Reads 6-digit numeric verification code",
-                        active: currentStep === "otp_received",
+                        active: currentStep === "otp_received" && phase === "running",
                         done: [
                           "onboarding_role",
                           "onboarding_goal",
                           "key_extracted",
                           "key_saved",
-                        ].includes(currentStep),
+                        ].includes(currentStep) || (phase === "completed" && !errorMsg),
                       },
                       {
                         id: "key",
-                        label: "4. Onboarding & Secret Key Saved",
-                        sub: "Configures Developer profile & saves to DB",
-                        active: ["onboarding_role", "onboarding_goal", "key_extracted"].includes(currentStep),
+                        label: "4. Onboarding & Secret Keys Saved",
+                        sub: "Harvests dual active keys & saves to DB",
+                        active: ["onboarding_role", "onboarding_goal", "key_extracted"].includes(currentStep) && phase === "running",
                         done: currentStep === "key_saved" || (phase === "completed" && !errorMsg),
                       },
                     ].map((st) => (
@@ -540,8 +545,8 @@ export function AutoProvisionModal({
                           st.done
                             ? "bg-emerald-500/10 border-emerald-500/30 text-emerald-600 dark:text-emerald-400"
                             : st.active
-                            ? "bg-primary/10 border-primary/40 text-primary shadow-xs animate-pulse"
-                            : "bg-muted/20 border-border text-muted-foreground opacity-60"
+                            ? "bg-primary/10 border-primary/40 text-primary shadow-xs"
+                            : "bg-muted/20 border-border text-muted-foreground"
                         }`}
                       >
                         <div className="flex items-center gap-3 min-w-0">
@@ -568,39 +573,41 @@ export function AutoProvisionModal({
                           </div>
                         </div>
 
-                        {st.done && (
-                          <span className="text-[10px] uppercase font-bold tracking-wider px-2 py-0.5 rounded bg-emerald-500/20 text-emerald-500 shrink-0">
-                            Done
-                          </span>
-                        )}
+                        <span
+                          className={`text-[10px] font-mono font-bold uppercase tracking-wider px-2 py-0.5 rounded ${
+                            st.done
+                              ? "bg-emerald-500/20 text-emerald-500"
+                              : st.active
+                              ? "bg-primary/20 text-primary animate-pulse"
+                              : "bg-muted text-muted-foreground"
+                          }`}
+                        >
+                          {st.done ? "DONE" : st.active ? "RUNNING" : "PENDING"}
+                        </span>
                       </div>
                     ))}
                   </div>
                 </div>
 
-                {}
+                {/* Live Credentials Preview */}
                 {(interceptedOtp || extractedKey) && (
-                  <div className="p-5 rounded-2xl bg-card border border-border shadow-xs space-y-3 animate-in fade-in">
+                  <div className="p-5 rounded-2xl bg-card border border-border shadow-xs space-y-3">
                     <h4 className="text-xs font-bold uppercase tracking-wider text-muted-foreground">
                       Captured Credentials (Live)
                     </h4>
 
-                    <div className="space-y-2">
+                    <div className="grid grid-cols-1 gap-3">
                       {interceptedOtp && (
                         <div className="p-3 rounded-xl bg-muted/40 border border-border flex items-center justify-between">
                           <div>
-                            <span className="text-[11px] text-muted-foreground block font-medium">
-                              Intercepted OTP
-                            </span>
-                            <span className="text-sm font-bold font-mono tracking-widest text-primary">
-                              {interceptedOtp}
-                            </span>
+                            <div className="text-[10px] uppercase font-bold text-muted-foreground">Intercepted OTP</div>
+                            <div className="text-sm font-mono font-bold text-primary tracking-widest">{interceptedOtp}</div>
                           </div>
                           <Button
                             variant="ghost"
                             size="sm"
                             onClick={handleCopyOtp}
-                            className="h-8 text-xs cursor-pointer"
+                            className="size-8 p-0 text-muted-foreground hover:text-foreground cursor-pointer"
                           >
                             {copiedOtp ? <Check className="size-3.5 text-emerald-500" /> : <Copy className="size-3.5" />}
                           </Button>
@@ -608,20 +615,16 @@ export function AutoProvisionModal({
                       )}
 
                       {extractedKey && (
-                        <div className="p-3 rounded-xl bg-emerald-500/10 border border-emerald-500/20 flex items-center justify-between">
-                          <div className="min-w-0 mr-2">
-                            <span className="text-[11px] text-emerald-600 dark:text-emerald-400 block font-medium">
-                              Extracted Secret Key
-                            </span>
-                            <span className="text-xs font-mono text-emerald-700 dark:text-emerald-300 truncate block">
-                              {extractedKey}
-                            </span>
+                        <div className="p-3 rounded-xl bg-muted/40 border border-border flex items-center justify-between">
+                          <div className="min-w-0">
+                            <div className="text-[10px] uppercase font-bold text-muted-foreground">Extracted API Key</div>
+                            <div className="text-xs font-mono font-bold text-emerald-500 truncate">{extractedKey}</div>
                           </div>
                           <Button
                             variant="ghost"
                             size="sm"
                             onClick={handleCopyKey}
-                            className="h-8 text-xs text-emerald-600 cursor-pointer shrink-0"
+                            className="size-8 p-0 text-muted-foreground hover:text-foreground shrink-0 cursor-pointer"
                           >
                             {copiedKey ? <Check className="size-3.5 text-emerald-500" /> : <Copy className="size-3.5" />}
                           </Button>
@@ -632,118 +635,48 @@ export function AutoProvisionModal({
                 )}
               </div>
 
-              {/* Right: Live Browser View & Realtime Terminal */}
+              {/* Right: Realtime Terminal Logs Console */}
               <div className="w-full lg:w-7/12 flex flex-col rounded-2xl border border-border bg-zinc-950 dark:bg-black shadow-2xl overflow-hidden min-h-[420px]">
-                {/* Header & Tabs */}
-                <div className="px-4 py-2.5 border-b border-zinc-800/80 bg-zinc-900/80 flex items-center justify-between shrink-0 flex-wrap gap-2">
-                  <div className="flex items-center gap-3">
+                {/* Header */}
+                <div className="px-4 py-3 border-b border-zinc-800/80 bg-zinc-900/60 flex items-center justify-between shrink-0">
+                  <div className="flex items-center gap-2">
                     <div className="flex items-center gap-1.5">
                       <span className="size-3 rounded-full bg-rose-500/80" />
                       <span className="size-3 rounded-full bg-amber-500/80" />
                       <span className="size-3 rounded-full bg-emerald-500/80" />
                     </div>
-
-                    <div className="flex items-center bg-zinc-800/70 p-0.5 rounded-lg border border-zinc-700/50">
-                      <button
-                        type="button"
-                        onClick={() => setActiveTab("browser")}
-                        className={`flex items-center gap-1.5 px-3 py-1 rounded-md text-xs font-mono transition-all cursor-pointer ${
-                          activeTab === "browser"
-                            ? "bg-primary text-primary-foreground font-semibold shadow-xs"
-                            : "text-zinc-400 hover:text-zinc-200"
-                        }`}
-                      >
-                        <Monitor className="size-3.5" /> Live Chrome View
-                        {liveScreenshot && <span className="size-1.5 rounded-full bg-emerald-400 animate-ping ml-1" />}
-                      </button>
-
-                      <button
-                        type="button"
-                        onClick={() => setActiveTab("terminal")}
-                        className={`flex items-center gap-1.5 px-3 py-1 rounded-md text-xs font-mono transition-all cursor-pointer ${
-                          activeTab === "terminal"
-                            ? "bg-zinc-700 text-white font-semibold shadow-xs"
-                            : "text-zinc-400 hover:text-zinc-200"
-                        }`}
-                      >
-                        <Terminal className="size-3.5 text-primary" /> Logs ({logs.length})
-                      </button>
-                    </div>
+                    <span className="text-xs font-mono text-zinc-300 ml-2 flex items-center gap-1.5">
+                      <Terminal className="size-3.5 text-primary" /> provisioner.log
+                    </span>
                   </div>
 
                   <div className="flex items-center gap-2 text-[11px] font-mono text-zinc-400">
-                    {currentUrl ? (
-                      <span className="flex items-center gap-1 max-w-[240px] truncate text-zinc-400 bg-zinc-800/60 px-2 py-0.5 rounded border border-zinc-700/40">
-                        <Lock className="size-2.5 text-emerald-400 shrink-0" />
-                        <span className="truncate">{currentUrl}</span>
-                      </span>
-                    ) : (
-                      <div className="flex items-center gap-1.5 text-zinc-500">
-                        <span className="size-2 rounded-full bg-emerald-500 animate-ping" />
-                        <span>Live Cloud Feed</span>
-                      </div>
-                    )}
+                    <span className={`size-2 rounded-full ${phase === 'running' ? 'bg-emerald-500 animate-ping' : 'bg-zinc-600'}`} />
+                    <span>{logs.length} events logged</span>
                   </div>
                 </div>
 
-                {/* Tab 1: Live Chrome Browser Screen */}
-                {activeTab === "browser" && (
-                  <div className="flex-1 flex flex-col bg-zinc-950 p-3 min-h-[360px] overflow-hidden">
-                    {/* Fake Browser Top URL Bar */}
-                    <div className="flex items-center gap-2 px-3 py-1.5 bg-zinc-900 border border-zinc-800 rounded-t-xl text-[11px] font-mono text-zinc-400 shrink-0">
-                      <Globe className="size-3.5 text-primary shrink-0" />
-                      <span className="text-zinc-200 font-semibold shrink-0">Chromium</span>
-                      <span className="text-zinc-600">/</span>
-                      <span className="truncate text-zinc-300 flex-1">{currentUrl || "https://indus.sarvam.ai/key-management"}</span>
-                      <span className="text-[10px] text-emerald-400 bg-emerald-500/10 px-1.5 py-0.5 rounded border border-emerald-500/20">
-                        LIVE
-                      </span>
-                    </div>
-
-                    {/* Live Screenshot Viewport */}
-                    <div className="flex-1 bg-black rounded-b-xl border-x border-b border-zinc-800 flex items-center justify-center overflow-hidden p-1 relative min-h-[300px]">
-                      {liveScreenshot ? (
-                        <img
-                          src={liveScreenshot}
-                          alt="Live Chrome View"
-                          className="w-full h-full max-h-[440px] object-contain rounded shadow-2xl animate-in fade-in duration-200"
-                        />
-                      ) : (
-                        <div className="flex flex-col items-center justify-center p-8 text-center space-y-3 text-zinc-500">
-                          <Loader2 className="size-8 animate-spin text-primary" />
-                          <div className="text-xs font-mono text-zinc-400">Connecting to live container Chrome screen...</div>
-                          <div className="text-[11px] text-zinc-600 max-w-xs">
-                            Live frame buffer streams directly from the cloud Playwright worker.
-                          </div>
-                        </div>
-                      )}
-                    </div>
-                  </div>
-                )}
-
-                {/* Tab 2: Retro Terminal Console */}
-                {activeTab === "terminal" && (
-                  <div className="p-4 flex-1 overflow-y-auto font-mono text-xs text-zinc-300 space-y-1 custom-scrollbar select-text max-h-[440px]">
-                    {logs.length === 0 ? (
-                      <div className="text-zinc-600 italic py-4">Connecting to real-time process stream...</div>
-                    ) : (
-                      logs.map((l, i) => (
-                        <div
-                          key={i}
-                          className={`flex items-start gap-2.5 leading-relaxed ${
-                            l.isError ? "text-rose-400" : "text-zinc-300"
-                          }`}
-                        >
-                          <span className="text-zinc-600 select-none font-mono text-[10px] w-7 shrink-0 text-right pt-0.5">
-                            {i + 1}
-                          </span>
-                          <span className="break-all">{l.line}</span>
-                        </div>
-                      ))
-                    )}
-                    <div ref={terminalEndRef} />
-                  </div>
-                )}
+                {/* Log Stream */}
+                <div className="p-4 flex-1 overflow-y-auto font-mono text-xs text-zinc-300 space-y-1.5 custom-scrollbar select-text max-h-[440px]">
+                  {logs.length === 0 ? (
+                    <div className="text-zinc-600 italic py-4">Connecting to real-time process stream...</div>
+                  ) : (
+                    logs.map((l, i) => (
+                      <div
+                        key={i}
+                        className={`flex items-start gap-2.5 leading-relaxed ${
+                          l.isError ? "text-rose-400" : "text-zinc-300"
+                        }`}
+                      >
+                        <span className="text-zinc-600 select-none font-mono text-[10px] w-7 shrink-0 text-right pt-0.5">
+                          {i + 1}
+                        </span>
+                        <span className="break-all">{l.line}</span>
+                      </div>
+                    ))
+                  )}
+                  <div ref={terminalEndRef} />
+                </div>
               </div>
             </div>
           )}

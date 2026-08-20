@@ -260,47 +260,30 @@ async def provision_stream(req: ProvisionRequest, authorization: Optional[str] =
                 log_queue = asyncio.Queue()
 
                 async def log_callback(item):
-                    await log_queue.put(item)
+                    if isinstance(item, dict):
+                        await log_queue.put(item.get("line", ""))
+                    else:
+                        await log_queue.put(str(item))
 
                 key_task = asyncio.create_task(sarvam.generate_api_key(page, context=context, log_cb=log_callback))
 
                 while not key_task.done():
                     try:
-                        item = await asyncio.wait_for(log_queue.get(), timeout=0.8)
-                        if isinstance(item, dict) and item.get("type") == "preview":
-                            yield {
-                                "event": "preview",
-                                "data": json.dumps(item)
-                            }
-                        elif isinstance(item, dict):
+                        line = await asyncio.wait_for(log_queue.get(), timeout=0.8)
+                        if line:
                             yield {
                                 "event": "log",
-                                "data": json.dumps({"line": item.get("line", ""), "timestamp": now_str()})
-                            }
-                        else:
-                            yield {
-                                "event": "log",
-                                "data": json.dumps({"line": str(item), "timestamp": now_str()})
+                                "data": json.dumps({"line": line, "timestamp": now_str()})
                             }
                     except asyncio.TimeoutError:
                         pass
 
                 while not log_queue.empty():
-                    item = log_queue.get_nowait()
-                    if isinstance(item, dict) and item.get("type") == "preview":
-                        yield {
-                            "event": "preview",
-                            "data": json.dumps(item)
-                        }
-                    elif isinstance(item, dict):
+                    line = log_queue.get_nowait()
+                    if line:
                         yield {
                             "event": "log",
-                            "data": json.dumps({"line": item.get("line", ""), "timestamp": now_str()})
-                        }
-                    else:
-                        yield {
-                            "event": "log",
-                            "data": json.dumps({"line": str(item), "timestamp": now_str()})
+                            "data": json.dumps({"line": line, "timestamp": now_str()})
                         }
 
                 raw_keys = await key_task

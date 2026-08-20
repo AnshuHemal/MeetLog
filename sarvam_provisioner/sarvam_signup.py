@@ -300,67 +300,78 @@ class SarvamProvisioner:
 
         keys_found: list[str] = []
 
-        # 2. Check for initial auto-generated API key popup right after onboarding
-        await log("Checking for initial auto-generated API key popup...")
+        # 2. Capture initial API key from welcome modal ("Here is your first API key to get started")
+        await log("Checking for 'Here is your first API key to get started' welcome modal...")
         await self._human_delay(1500, 2500)
-        await self.capture_frame(page, log_cb, "Post-Onboarding Screen")
 
-        for _ in range(3):
-            try:
-                initial_key = await page.evaluate("""
-                    () => {
-                        for (const el of document.querySelectorAll("input, textarea, code, pre")) {
-                            let val = (el.value || el.innerText || "").trim();
-                            if (val.startsWith("sk_") && val.length >= 24 && !val.includes("*")) {
-                                return val;
-                            }
-                        }
-                        const fullText = document.body.innerText || "";
-                        const match = fullText.match(/\\b(sk_[a-zA-Z0-9_-]{20,80})\\b/);
-                        if (match && !match[1].includes("*")) {
-                            return match[1];
-                        }
-                        return null;
-                    }
-                """)
-                if initial_key and initial_key not in keys_found:
-                    keys_found.append(initial_key)
-                    await log(f"Captured initial auto-generated Key #1: {initial_key[:8]}...{initial_key[-4:]}")
-                    break
-            except Exception:
-                pass
-            await asyncio.sleep(1)
-
-        # Dismiss any welcome / initial key dialog if visible
         try:
-            await page.evaluate("""
-                () => {
-                    for (const b of document.querySelectorAll("button, [role='button']")) {
-                        const txt = (b.innerText || "").trim();
-                        if (txt.includes("I have saved it") || txt === "Done" || txt === "Close" || txt === "Get Started") {
-                            b.click();
-                            return true;
-                        }
-                    }
-                    return false;
-                }
-            """)
-            await self._human_delay(1000, 1800)
+            copy_btn = page.locator("button:has-text('Copy'), [aria-label*='copy' i], svg[class*='copy' i]").first
+            if await copy_btn.count() > 0 and await copy_btn.is_visible():
+                await copy_btn.click()
+                await asyncio.sleep(0.5)
+                cb_text = await page.evaluate("navigator.clipboard.readText()")
+                if cb_text and cb_text.strip().startswith("sk_") and not "*" in cb_text:
+                    k1 = cb_text.strip()
+                    keys_found.append(k1)
+                    await log(f"Captured initial API Key #1 from welcome modal: {k1[:8]}...{k1[-4:]}")
         except Exception:
             pass
 
-        # 3. Navigate directly to https://indus.sarvam.ai/key-management
-        await log("Navigating directly to https://indus.sarvam.ai/key-management to create secondary API key...")
+        # Also regex match unmasked token if available
+        if len(keys_found) == 0:
+            try:
+                extracted = await page.evaluate("""
+                    () => {
+                        for (const el of document.querySelectorAll("input, textarea, code, pre")) {
+                            let val = (el.value || el.innerText || "").trim();
+                            if (val.startsWith("sk_") && val.length >= 24 && !val.includes("*")) return val;
+                        }
+                        const fullText = document.body.innerText || "";
+                        const match = fullText.match(/\\b(sk_[a-zA-Z0-9_-]{20,80})\\b/);
+                        if (match && !match[1].includes("*")) return match[1];
+                        return null;
+                    }
+                """)
+                if extracted and extracted not in keys_found:
+                    keys_found.append(extracted)
+                    await log(f"Captured initial API Key #1: {extracted[:8]}...{extracted[-4:]}")
+            except Exception:
+                pass
+
+        # Close welcome modal by clicking "I have saved it"
+        try:
+            saved_btn = page.locator("button:has-text('I have saved it'), button:has-text('Done'), button:has-text('Close')").first
+            if await saved_btn.count() > 0 and await saved_btn.is_visible():
+                await saved_btn.click()
+                await self._human_delay(800, 1500)
+            else:
+                await page.evaluate("""
+                    () => {
+                        for (const b of document.querySelectorAll("button, [role='button']")) {
+                            const txt = (b.innerText || "").trim();
+                            if (txt.includes("I have saved it") || txt === "Done" || txt === "Close") {
+                                b.click();
+                                return true;
+                            }
+                        }
+                        return false;
+                    }
+                """)
+                await self._human_delay(800, 1500)
+        except Exception:
+            pass
+
+        # 3. Navigate directly to https://indus.sarvam.ai/key-management to create secondary API key
+        await log("Navigating to https://indus.sarvam.ai/key-management for secondary API key...")
         try:
             await page.goto("https://indus.sarvam.ai/key-management", wait_until="domcontentloaded", timeout=30000)
-            await self._human_delay(2000, 3500)
-            await self.capture_frame(page, log_cb, "Key Management Page Loaded")
+            await self._human_delay(2000, 3000)
         except Exception as e:
             await log(f"Navigation warning: {e}")
 
         # If redirected back to onboarding, complete whatever is visible
         if "onboarding" in page.url:
-            await log("Detected onboarding redirect, completing final step...")
+            await log("Completing onboarding redirect...")
             await page.evaluate("""
                 () => {
                     for (const el of document.querySelectorAll("div, button, [role='button']")) {
@@ -371,7 +382,7 @@ class SarvamProvisioner:
                     }
                 }
             """)
-            await self._human_delay(2500, 3500)
+            await self._human_delay(2000, 3000)
             try:
                 await page.goto("https://indus.sarvam.ai/key-management", wait_until="domcontentloaded", timeout=20000)
                 await self._human_delay(2000, 3000)
@@ -412,7 +423,6 @@ class SarvamProvisioner:
             await create_btn.click()
             await log("Clicked '+ Create API Key' button.")
         else:
-            # Fallback JS click
             await page.evaluate("""
                 () => {
                     for (const el of document.querySelectorAll("button, [role='button'], a, div, span")) {
@@ -427,11 +437,10 @@ class SarvamProvisioner:
             """)
             await log("Triggered JS click on '+ Create API Key'.")
 
-        await self._human_delay(1200, 2000)
-        await self.capture_frame(page, log_cb, "Create Key Dialog Opened")
+        await self._human_delay(1000, 1800)
 
         # 6. Fill key name in dialog using real native keystrokes
-        await log(f"Entering API key name: {key_name}...")
+        await log(f"Entering secondary API key name: {key_name}...")
         try:
             name_input = page.locator("input[placeholder*='production-app' i], input[placeholder*='name' i], input[type='text'], input").first
             await name_input.wait_for(state="visible", timeout=12000)
@@ -456,8 +465,7 @@ class SarvamProvisioner:
                 }
             """, key_name)
 
-        await self._human_delay(800, 1500)
-        await self.capture_frame(page, log_cb, "Key Name Entered")
+        await self._human_delay(800, 1200)
 
         # 7. Click "Create key" submit button
         await log("Submitting secondary key creation form...")
@@ -481,41 +489,13 @@ class SarvamProvisioner:
                 }
             """)
 
-        await self._human_delay(2000, 3500)
-        await self.capture_frame(page, log_cb, "Key Confirmation Dialog")
+        await self._human_delay(1500, 2500)
 
         # 8. Extract unmasked API key from confirmation dialog (polling up to 15 seconds)
         await log("Extracting unmasked API key from confirmation dialog...")
         key_2 = None
 
         for attempt_sec in range(15):
-            try:
-                extracted_token = await page.evaluate("""
-                    () => {
-                        // 1. Check all inputs and textareas
-                        for (const el of document.querySelectorAll("input, textarea, code, pre")) {
-                            let val = (el.value || el.innerText || "").trim();
-                            if (val.startsWith("sk_") && val.length >= 24 && !val.includes("*")) {
-                                return val;
-                            }
-                        }
-                        // 2. Scan entire page body text for unmasked sk_ token
-                        const fullText = document.body.innerText || "";
-                        const match = fullText.match(/\\b(sk_[a-zA-Z0-9_-]{20,80})\\b/);
-                        if (match && !match[1].includes("*")) {
-                            return match[1];
-                        }
-                        return null;
-                    }
-                """)
-                if extracted_token and extracted_token not in keys_found:
-                    key_2 = extracted_token
-                    keys_found.append(key_2)
-                    await log(f"API Key #2 extracted from dialog: {key_2[:8]}...{key_2[-4:]}")
-                    break
-            except Exception:
-                pass
-
             # Try clicking Copy button if available
             try:
                 copy_btn = page.locator("button:has-text('Copy'), [aria-label*='copy' i], svg[class*='copy' i]").first
@@ -529,6 +509,27 @@ class SarvamProvisioner:
                             keys_found.append(key_2)
                             await log(f"API Key #2 extracted via clipboard: {key_2[:8]}...{key_2[-4:]}")
                             break
+            except Exception:
+                pass
+
+            try:
+                extracted_token = await page.evaluate("""
+                    () => {
+                        for (const el of document.querySelectorAll("input, textarea, code, pre")) {
+                            let val = (el.value || el.innerText || "").trim();
+                            if (val.startsWith("sk_") && val.length >= 24 && !val.includes("*")) return val;
+                        }
+                        const fullText = document.body.innerText || "";
+                        const match = fullText.match(/\\b(sk_[a-zA-Z0-9_-]{20,80})\\b/);
+                        if (match && !match[1].includes("*")) return match[1];
+                        return null;
+                    }
+                """)
+                if extracted_token and extracted_token not in keys_found:
+                    key_2 = extracted_token
+                    keys_found.append(key_2)
+                    await log(f"API Key #2 extracted from dialog: {key_2[:8]}...{key_2[-4:]}")
+                    break
             except Exception:
                 pass
 
@@ -553,11 +554,9 @@ class SarvamProvisioner:
                     }
                 """)
             await self._human_delay(500, 1000)
-            await self.capture_frame(page, log_cb, "Key Saved & Done")
         except Exception:
             pass
 
-        # Deduplicate keys found
         unique_keys = list(dict.fromkeys(keys_found))
         await log(f"Account completed: Harvested {len(unique_keys)} active API Key(s)!")
         return unique_keys
