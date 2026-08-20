@@ -1,7 +1,7 @@
-
 import asyncio
 import json
 import os
+import datetime
 from typing import AsyncGenerator, Optional
 from fastapi import FastAPI, HTTPException, Header
 from fastapi.middleware.cors import CORSMiddleware
@@ -59,6 +59,9 @@ async def provision_stream(req: ProvisionRequest, authorization: Optional[str] =
     headless = req.headless
 
     async def event_generator() -> AsyncGenerator[dict, None]:
+        def now_str():
+            return datetime.datetime.now().strftime("%H:%M:%S")
+
         yield {
             "event": "status",
             "data": json.dumps({
@@ -69,14 +72,32 @@ async def provision_stream(req: ProvisionRequest, authorization: Optional[str] =
             })
         }
 
+        yield {
+            "event": "log",
+            "data": json.dumps({"line": f"Initializing provisioner session (target: {target_count} key(s))...", "timestamp": now_str()})
+        }
+
         boomlify = BoomlifyClient(api_key=Config.BOOMLIFY_API_KEY)
         sarvam = SarvamProvisioner(headless=headless)
         created_keys = []
 
         try:
+            yield {
+                "event": "log",
+                "data": json.dumps({"line": "Launching headless Playwright Chromium instance on Linux...", "timestamp": now_str()})
+            }
             await sarvam.start()
+            yield {
+                "event": "log",
+                "data": json.dumps({"line": "Playwright Chromium browser ready.", "timestamp": now_str()})
+            }
 
             for i in range(1, target_count + 1):
+                yield {
+                    "event": "log",
+                    "data": json.dumps({"line": f"--- Starting Account {i}/{target_count} ---", "timestamp": now_str()})
+                }
+
                 yield {
                     "event": "step",
                     "data": json.dumps({
@@ -86,16 +107,26 @@ async def provision_stream(req: ProvisionRequest, authorization: Optional[str] =
                     })
                 }
 
+                yield {
+                    "event": "log",
+                    "data": json.dumps({"line": "Requesting disposable inbox from Boomlify...", "timestamp": now_str()})
+                }
+
                 email_res = boomlify.create_email(duration="1hour")
                 if not email_res["success"]:
                     yield {
                         "event": "log",
-                        "data": json.dumps({"line": f"Email creation error: {email_res.get('error')}", "isError": True})
+                        "data": json.dumps({"line": f"Boomlify error: {email_res.get('error')}", "isError": True, "timestamp": now_str()})
                     }
                     continue
 
                 email_id = email_res["email_id"]
                 email_address = email_res["address"]
+
+                yield {
+                    "event": "log",
+                    "data": json.dumps({"line": f"Disposable inbox ready: {email_address}", "timestamp": now_str()})
+                }
 
                 yield {
                     "event": "step",
@@ -116,14 +147,24 @@ async def provision_stream(req: ProvisionRequest, authorization: Optional[str] =
                     })
                 }
 
+                yield {
+                    "event": "log",
+                    "data": json.dumps({"line": f"Opening Sarvam registration portal and filling form...", "timestamp": now_str()})
+                }
+
                 signup_res = await sarvam.provision_account(email=email_address)
                 if not signup_res.get("awaiting_otp"):
                     yield {
                         "event": "log",
-                        "data": json.dumps({"line": f"Registration failed: {signup_res.get('error')}", "isError": True})
+                        "data": json.dumps({"line": f"Registration submission error: {signup_res.get('error')}", "isError": True, "timestamp": now_str()})
                     }
                     boomlify.delete_email(email_id)
                     continue
+
+                yield {
+                    "event": "log",
+                    "data": json.dumps({"line": "Form submitted. Listening for email OTP code...", "timestamp": now_str()})
+                }
 
                 yield {
                     "event": "step",
@@ -139,7 +180,11 @@ async def provision_stream(req: ProvisionRequest, authorization: Optional[str] =
                 otp = None
 
                 for attempt in range(1, 15):
-                    await asyncio.sleep(5)
+                    await asyncio.sleep(4)
+                    yield {
+                        "event": "log",
+                        "data": json.dumps({"line": f"Polling Boomlify inbox (attempt {attempt}/15)...", "timestamp": now_str()})
+                    }
                     otp = boomlify.get_verification_code(email_id)
                     if otp:
                         break
@@ -147,12 +192,17 @@ async def provision_stream(req: ProvisionRequest, authorization: Optional[str] =
                 if not otp:
                     yield {
                         "event": "log",
-                        "data": json.dumps({"line": "OTP timeout", "isError": True})
+                        "data": json.dumps({"line": "OTP interception timed out.", "isError": True, "timestamp": now_str()})
                     }
                     boomlify.delete_email(email_id)
                     if context:
                         await context.close()
                     continue
+
+                yield {
+                    "event": "log",
+                    "data": json.dumps({"line": f"Intercepted 6-digit verification code: {otp}", "timestamp": now_str()})
+                }
 
                 yield {
                     "event": "step",
@@ -164,12 +214,26 @@ async def provision_stream(req: ProvisionRequest, authorization: Optional[str] =
                     })
                 }
 
+                yield {
+                    "event": "log",
+                    "data": json.dumps({"line": "Entering OTP into verification field...", "timestamp": now_str()})
+                }
+
                 otp_ok = await sarvam.complete_otp_verification(page, otp)
                 if not otp_ok:
+                    yield {
+                        "event": "log",
+                        "data": json.dumps({"line": "OTP verification failed on Sarvam portal.", "isError": True, "timestamp": now_str()})
+                    }
                     boomlify.delete_email(email_id)
                     if context:
                         await context.close()
                     continue
+
+                yield {
+                    "event": "log",
+                    "data": json.dumps({"line": "OTP verified! Setting up Developer workspace profile...", "timestamp": now_str()})
+                }
 
                 yield {
                     "event": "step",
@@ -182,12 +246,21 @@ async def provision_stream(req: ProvisionRequest, authorization: Optional[str] =
 
                 api_key = await sarvam.generate_api_key(page, context=context)
                 if not api_key:
+                    yield {
+                        "event": "log",
+                        "data": json.dumps({"line": "Failed to extract API key from dashboard.", "isError": True, "timestamp": now_str()})
+                    }
                     boomlify.delete_email(email_id)
                     if context:
                         await context.close()
                     continue
 
                 created_keys.append(api_key)
+                yield {
+                    "event": "log",
+                    "data": json.dumps({"line": f"Successfully extracted API Key: {api_key[:8]}...{api_key[-4:]}", "timestamp": now_str()})
+                }
+
                 yield {
                     "event": "step",
                     "data": json.dumps({
@@ -206,6 +279,10 @@ async def provision_stream(req: ProvisionRequest, authorization: Optional[str] =
                         label=f"Auto-provisioned #{i}",
                     )
                     yield {
+                        "event": "log",
+                        "data": json.dumps({"line": "Saved API key to Neon PostgreSQL database key pool.", "timestamp": now_str()})
+                    }
+                    yield {
                         "event": "key_saved",
                         "data": json.dumps({
                             "account": i,
@@ -219,7 +296,16 @@ async def provision_stream(req: ProvisionRequest, authorization: Optional[str] =
                     await context.close()
 
                 if i < target_count:
+                    yield {
+                        "event": "log",
+                        "data": json.dumps({"line": "Pausing 5s before next account...", "timestamp": now_str()})
+                    }
                     await asyncio.sleep(5)
+
+            yield {
+                "event": "log",
+                "data": json.dumps({"line": f"Provisioning complete! Total keys created: {len(created_keys)}", "timestamp": now_str()})
+            }
 
             yield {
                 "event": "complete",

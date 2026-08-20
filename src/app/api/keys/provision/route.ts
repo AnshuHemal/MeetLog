@@ -42,8 +42,10 @@ export async function POST(req: NextRequest) {
 
     const remoteServiceUrl =
       process.env.PROVISIONER_SERVICE_URL || "https://meetlog-sarvam-provisioner.onrender.com";
+
     if (remoteServiceUrl) {
       try {
+        console.log(`[PROVISION PROXY] Forwarding request to remote provisioner: ${remoteServiceUrl}...`);
         const remoteRes = await fetch(`${remoteServiceUrl.replace(/\/$/, "")}/provision`, {
           method: "POST",
           headers: {
@@ -58,9 +60,30 @@ export async function POST(req: NextRequest) {
           throw new Error(`Remote provisioner HTTP ${remoteRes.status}: ${errDetail || remoteRes.statusText}`);
         }
 
-        return new Response(remoteRes.body, {
+        const remoteReader = remoteRes.body.getReader();
+        const customStream = new ReadableStream({
+          async start(controller) {
+            try {
+              while (true) {
+                const { done, value } = await remoteReader.read();
+                if (done) {
+                  controller.close();
+                  break;
+                }
+                controller.enqueue(value);
+              }
+            } catch (streamErr) {
+              controller.error(streamErr);
+            }
+          },
+          cancel() {
+            remoteReader.cancel().catch(() => {});
+          },
+        });
+
+        return new Response(customStream, {
           headers: {
-            "Content-Type": "text/event-stream",
+            "Content-Type": "text/event-stream; charset=utf-8",
             "Cache-Control": "no-cache, no-transform",
             Connection: "keep-alive",
             "X-Accel-Buffering": "no",
@@ -68,10 +91,14 @@ export async function POST(req: NextRequest) {
         });
       } catch (err: any) {
         console.error("[REMOTE PROVISIONER ERROR]", err);
-        return new Response(JSON.stringify({ error: `Remote provisioner error: ${err.message}` }), {
-          status: 502,
-          headers: { "Content-Type": "application/json" },
-        });
+        const scriptPath = path.join(process.cwd(), "sarvam_provisioner", "main.py");
+        if (!fs.existsSync(scriptPath)) {
+          return new Response(JSON.stringify({ error: `Remote provisioner error: ${err.message}` }), {
+            status: 502,
+            headers: { "Content-Type": "application/json" },
+          });
+        }
+        console.warn("[PROVISION FALLBACK] Falling back to local provisioner script...");
       }
     }
 

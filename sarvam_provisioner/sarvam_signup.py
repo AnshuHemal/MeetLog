@@ -30,6 +30,11 @@ class SarvamProvisioner:
             args=[
                 "--disable-blink-features=AutomationControlled",
                 "--no-sandbox",
+                "--disable-setuid-sandbox",
+                "--disable-dev-shm-usage",
+                "--disable-gpu",
+                "--no-first-run",
+                "--no-zygote",
                 "--disable-infobars",
                 "--start-maximized",
             ],
