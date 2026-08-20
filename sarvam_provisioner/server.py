@@ -259,27 +259,49 @@ async def provision_stream(req: ProvisionRequest, authorization: Optional[str] =
 
                 log_queue = asyncio.Queue()
 
-                async def log_callback(msg: str):
-                    await log_queue.put(msg)
+                async def log_callback(item):
+                    await log_queue.put(item)
 
                 key_task = asyncio.create_task(sarvam.generate_api_key(page, context=context, log_cb=log_callback))
 
                 while not key_task.done():
                     try:
-                        msg = await asyncio.wait_for(log_queue.get(), timeout=0.8)
-                        yield {
-                            "event": "log",
-                            "data": json.dumps({"line": msg, "timestamp": now_str()})
-                        }
+                        item = await asyncio.wait_for(log_queue.get(), timeout=0.8)
+                        if isinstance(item, dict) and item.get("type") == "preview":
+                            yield {
+                                "event": "preview",
+                                "data": json.dumps(item)
+                            }
+                        elif isinstance(item, dict):
+                            yield {
+                                "event": "log",
+                                "data": json.dumps({"line": item.get("line", ""), "timestamp": now_str()})
+                            }
+                        else:
+                            yield {
+                                "event": "log",
+                                "data": json.dumps({"line": str(item), "timestamp": now_str()})
+                            }
                     except asyncio.TimeoutError:
                         pass
 
                 while not log_queue.empty():
-                    msg = log_queue.get_nowait()
-                    yield {
-                        "event": "log",
-                        "data": json.dumps({"line": msg, "timestamp": now_str()})
-                    }
+                    item = log_queue.get_nowait()
+                    if isinstance(item, dict) and item.get("type") == "preview":
+                        yield {
+                            "event": "preview",
+                            "data": json.dumps(item)
+                        }
+                    elif isinstance(item, dict):
+                        yield {
+                            "event": "log",
+                            "data": json.dumps({"line": item.get("line", ""), "timestamp": now_str()})
+                        }
+                    else:
+                        yield {
+                            "event": "log",
+                            "data": json.dumps({"line": str(item), "timestamp": now_str()})
+                        }
 
                 api_key = await key_task
                 if not api_key:

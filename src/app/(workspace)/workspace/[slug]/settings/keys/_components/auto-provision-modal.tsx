@@ -19,6 +19,9 @@ import {
   Radio,
   Layers,
   Copy,
+  Monitor,
+  Globe,
+  Lock,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { getBoomlifyCreditStatsAction } from "../actions";
@@ -72,6 +75,9 @@ export function AutoProvisionModal({
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
   const [copiedOtp, setCopiedOtp] = useState<boolean>(false);
   const [copiedKey, setCopiedKey] = useState<boolean>(false);
+  const [liveScreenshot, setLiveScreenshot] = useState<string | null>(null);
+  const [currentUrl, setCurrentUrl] = useState<string>("");
+  const [activeTab, setActiveTab] = useState<"terminal" | "browser">("browser");
 
   const terminalEndRef = useRef<HTMLDivElement>(null);
   const abortControllerRef = useRef<AbortController | null>(null);
@@ -173,7 +179,10 @@ export function AutoProvisionModal({
           try {
             const data = JSON.parse(dataStr);
 
-            if (eventName === "log") {
+            if (eventName === "preview") {
+              if (data.image) setLiveScreenshot(data.image);
+              if (data.url) setCurrentUrl(data.url);
+            } else if (eventName === "log") {
               setLogs((prev) => [...prev, { line: data.line, isError: data.isError, timestamp: data.timestamp }]);
             } else if (eventName === "step") {
               if (data.account) setCurrentAccount(data.account);
@@ -623,48 +632,118 @@ export function AutoProvisionModal({
                 )}
               </div>
 
-              {}
-              <div className="w-full lg:w-7/12 flex flex-col rounded-2xl border border-border bg-zinc-950 dark:bg-black shadow-2xl overflow-hidden min-h-[380px]">
-                {}
-                <div className="px-4 py-3 border-b border-zinc-800/80 bg-zinc-900/60 flex items-center justify-between shrink-0">
-                  <div className="flex items-center gap-2">
+              {/* Right: Live Browser View & Realtime Terminal */}
+              <div className="w-full lg:w-7/12 flex flex-col rounded-2xl border border-border bg-zinc-950 dark:bg-black shadow-2xl overflow-hidden min-h-[420px]">
+                {/* Header & Tabs */}
+                <div className="px-4 py-2.5 border-b border-zinc-800/80 bg-zinc-900/80 flex items-center justify-between shrink-0 flex-wrap gap-2">
+                  <div className="flex items-center gap-3">
                     <div className="flex items-center gap-1.5">
                       <span className="size-3 rounded-full bg-rose-500/80" />
                       <span className="size-3 rounded-full bg-amber-500/80" />
                       <span className="size-3 rounded-full bg-emerald-500/80" />
                     </div>
-                    <span className="text-xs font-mono text-zinc-400 ml-2 flex items-center gap-1.5">
-                      <Terminal className="size-3.5 text-primary" /> provisioner.log
-                    </span>
-                  </div>
 
-                  <div className="flex items-center gap-2 text-[11px] font-mono text-zinc-500">
-                    <span className="size-2 rounded-full bg-emerald-500 animate-ping" />
-                    <span>{logs.length} events logged</span>
-                  </div>
-                </div>
-
-                {}
-                <div className="p-4 flex-1 overflow-y-auto font-mono text-xs text-zinc-300 space-y-1 custom-scrollbar select-text">
-                  {logs.length === 0 ? (
-                    <div className="text-zinc-600 italic py-4">Connecting to real-time process stream...</div>
-                  ) : (
-                    logs.map((l, i) => (
-                      <div
-                        key={i}
-                        className={`flex items-start gap-2.5 leading-relaxed ${
-                          l.isError ? "text-rose-400" : "text-zinc-300"
+                    <div className="flex items-center bg-zinc-800/70 p-0.5 rounded-lg border border-zinc-700/50">
+                      <button
+                        type="button"
+                        onClick={() => setActiveTab("browser")}
+                        className={`flex items-center gap-1.5 px-3 py-1 rounded-md text-xs font-mono transition-all cursor-pointer ${
+                          activeTab === "browser"
+                            ? "bg-primary text-primary-foreground font-semibold shadow-xs"
+                            : "text-zinc-400 hover:text-zinc-200"
                         }`}
                       >
-                        <span className="text-zinc-600 select-none font-mono text-[10px] w-7 shrink-0 text-right pt-0.5">
-                          {i + 1}
-                        </span>
-                        <span className="break-all">{l.line}</span>
+                        <Monitor className="size-3.5" /> Live Chrome View
+                        {liveScreenshot && <span className="size-1.5 rounded-full bg-emerald-400 animate-ping ml-1" />}
+                      </button>
+
+                      <button
+                        type="button"
+                        onClick={() => setActiveTab("terminal")}
+                        className={`flex items-center gap-1.5 px-3 py-1 rounded-md text-xs font-mono transition-all cursor-pointer ${
+                          activeTab === "terminal"
+                            ? "bg-zinc-700 text-white font-semibold shadow-xs"
+                            : "text-zinc-400 hover:text-zinc-200"
+                        }`}
+                      >
+                        <Terminal className="size-3.5 text-primary" /> Logs ({logs.length})
+                      </button>
+                    </div>
+                  </div>
+
+                  <div className="flex items-center gap-2 text-[11px] font-mono text-zinc-400">
+                    {currentUrl ? (
+                      <span className="flex items-center gap-1 max-w-[240px] truncate text-zinc-400 bg-zinc-800/60 px-2 py-0.5 rounded border border-zinc-700/40">
+                        <Lock className="size-2.5 text-emerald-400 shrink-0" />
+                        <span className="truncate">{currentUrl}</span>
+                      </span>
+                    ) : (
+                      <div className="flex items-center gap-1.5 text-zinc-500">
+                        <span className="size-2 rounded-full bg-emerald-500 animate-ping" />
+                        <span>Live Cloud Feed</span>
                       </div>
-                    ))
-                  )}
-                  <div ref={terminalEndRef} />
+                    )}
+                  </div>
                 </div>
+
+                {/* Tab 1: Live Chrome Browser Screen */}
+                {activeTab === "browser" && (
+                  <div className="flex-1 flex flex-col bg-zinc-950 p-3 min-h-[360px] overflow-hidden">
+                    {/* Fake Browser Top URL Bar */}
+                    <div className="flex items-center gap-2 px-3 py-1.5 bg-zinc-900 border border-zinc-800 rounded-t-xl text-[11px] font-mono text-zinc-400 shrink-0">
+                      <Globe className="size-3.5 text-primary shrink-0" />
+                      <span className="text-zinc-200 font-semibold shrink-0">Chromium</span>
+                      <span className="text-zinc-600">/</span>
+                      <span className="truncate text-zinc-300 flex-1">{currentUrl || "https://indus.sarvam.ai/key-management"}</span>
+                      <span className="text-[10px] text-emerald-400 bg-emerald-500/10 px-1.5 py-0.5 rounded border border-emerald-500/20">
+                        LIVE
+                      </span>
+                    </div>
+
+                    {/* Live Screenshot Viewport */}
+                    <div className="flex-1 bg-black rounded-b-xl border-x border-b border-zinc-800 flex items-center justify-center overflow-hidden p-1 relative min-h-[300px]">
+                      {liveScreenshot ? (
+                        <img
+                          src={liveScreenshot}
+                          alt="Live Chrome View"
+                          className="w-full h-full max-h-[440px] object-contain rounded shadow-2xl animate-in fade-in duration-200"
+                        />
+                      ) : (
+                        <div className="flex flex-col items-center justify-center p-8 text-center space-y-3 text-zinc-500">
+                          <Loader2 className="size-8 animate-spin text-primary" />
+                          <div className="text-xs font-mono text-zinc-400">Connecting to live container Chrome screen...</div>
+                          <div className="text-[11px] text-zinc-600 max-w-xs">
+                            Live frame buffer streams directly from the cloud Playwright worker.
+                          </div>
+                        </div>
+                      )}
+                    </div>
+                  </div>
+                )}
+
+                {/* Tab 2: Retro Terminal Console */}
+                {activeTab === "terminal" && (
+                  <div className="p-4 flex-1 overflow-y-auto font-mono text-xs text-zinc-300 space-y-1 custom-scrollbar select-text max-h-[440px]">
+                    {logs.length === 0 ? (
+                      <div className="text-zinc-600 italic py-4">Connecting to real-time process stream...</div>
+                    ) : (
+                      logs.map((l, i) => (
+                        <div
+                          key={i}
+                          className={`flex items-start gap-2.5 leading-relaxed ${
+                            l.isError ? "text-rose-400" : "text-zinc-300"
+                          }`}
+                        >
+                          <span className="text-zinc-600 select-none font-mono text-[10px] w-7 shrink-0 text-right pt-0.5">
+                            {i + 1}
+                          </span>
+                          <span className="break-all">{l.line}</span>
+                        </div>
+                      ))
+                    )}
+                    <div ref={terminalEndRef} />
+                  </div>
+                )}
               </div>
             </div>
           )}

@@ -1,5 +1,6 @@
 
 import asyncio
+import base64
 import logging
 import random
 from pathlib import Path
@@ -22,6 +23,17 @@ class SarvamProvisioner:
         self.playwright = None
         self.browser: Optional[Browser] = None
         self.headless = Config.HEADLESS_MODE if headless is None else headless
+
+    async def capture_frame(self, page: Page, log_cb=None, label: str = "") -> Optional[str]:
+        try:
+            raw_bytes = await page.screenshot(type="jpeg", quality=60)
+            img_b64 = "data:image/jpeg;base64," + base64.b64encode(raw_bytes).decode("utf-8")
+            if log_cb:
+                await log_cb({"type": "preview", "image": img_b64, "url": page.url, "title": await page.title(), "label": label})
+            return img_b64
+        except Exception as e:
+            logger.warning(f"Screenshot capture warning: {e}")
+            return None
 
     async def start(self):
         import os
@@ -181,7 +193,9 @@ class SarvamProvisioner:
         async def log(msg: str):
             logger.info(msg)
             if log_cb:
-                await log_cb(msg)
+                await log_cb({"type": "log", "line": msg})
+
+        await self.capture_frame(page, log_cb, "Post-OTP Screen")
 
         # 1. Complete any initial onboarding choices if visible
         try:
@@ -196,7 +210,8 @@ class SarvamProvisioner:
                     if await dev_btn.count() > 0 and await dev_btn.is_visible():
                         await dev_btn.click()
                         await log("Selected 'Developer' role.")
-                        await self._human_delay(1000, 1800)
+                        await self._human_delay(800, 1500)
+                        await self.capture_frame(page, log_cb, "Selected Developer")
                         break
                 except Exception:
                     pass
@@ -208,7 +223,8 @@ class SarvamProvisioner:
                     if await api_btn.count() > 0 and await api_btn.is_visible():
                         await api_btn.click()
                         await log("Selected 'Sarvam API' goal.")
-                        await self._human_delay(1000, 1800)
+                        await self._human_delay(800, 1500)
+                        await self.capture_frame(page, log_cb, "Selected Sarvam API")
                         break
                 except Exception:
                     pass
@@ -221,30 +237,37 @@ class SarvamProvisioner:
                         await continue_btn.click()
                         await log("Submitted onboarding choices.")
                         await self._human_delay(2000, 3000)
+                        await self.capture_frame(page, log_cb, "Onboarding Submitted")
                         break
                 except Exception:
                     pass
         except Exception as e:
             logger.warning(f"Onboarding flow check: {e}")
 
-        # 2. Locate and click "+ Create API Key" with resilient attempts
+        # 2. Navigate directly to https://indus.sarvam.ai/key-management
+        await log("Navigating directly to https://indus.sarvam.ai/key-management...")
+        try:
+            await page.goto("https://indus.sarvam.ai/key-management", wait_until="domcontentloaded", timeout=30000)
+            await self._human_delay(2500, 4000)
+            await self.capture_frame(page, log_cb, "Key Management Dashboard")
+        except Exception as e:
+            await log(f"Navigation warning: {e}")
+
+        # 3. Locate and click "+ Create API Key"
         key_name = f"meetlog-pool-{random.randint(1000, 9999)}"
         clicked_create = False
 
         for attempt in range(1, 6):
-            await log(f"Searching for '+ Create API Key' (attempt {attempt}/5)...")
+            await log(f"Searching for '+ Create API Key' (attempt {attempt}/5, URL: {page.url})...")
 
             # Try direct JS evaluation click
             clicked = await page.evaluate("""
                 () => {
-                    const candidateSelectors = ["button", "[role='button']", "a", "span", "div"];
-                    for (const sel of candidateSelectors) {
-                        for (const el of document.querySelectorAll(sel)) {
-                            const txt = (el.innerText || "").trim();
-                            if (txt.includes("Create API Key") || txt === "+ Create API Key" || txt === "Create Key" || txt === "+ Create") {
-                                el.click();
-                                return true;
-                            }
+                    for (const el of document.querySelectorAll("button, [role='button'], a, div, span")) {
+                        const txt = (el.innerText || "").trim();
+                        if (txt.includes("Create API Key") || txt === "+ Create API Key" || txt === "Create Key" || txt === "+ Create") {
+                            el.click();
+                            return true;
                         }
                     }
                     return false;
@@ -254,27 +277,30 @@ class SarvamProvisioner:
                 await log("Clicked '+ Create API Key' button.")
                 clicked_create = True
                 await self._human_delay(1500, 2500)
+                await self.capture_frame(page, log_cb, "Create Key Dialog Opened")
                 break
 
-            # Try clicking sidebar 'API Keys' link
+            # Try sidebar navigation link (strict href)
             try:
-                sidebar_link = page.locator("a:has-text('API Keys'), span:has-text('API Keys'), a[href*='key-management']").first
+                sidebar_link = page.locator("a[href*='key-management']").first
                 if await sidebar_link.count() > 0 and await sidebar_link.is_visible():
                     await log("Clicking sidebar 'API Keys' link...")
                     await sidebar_link.click()
                     await self._human_delay(2000, 3000)
+                    await self.capture_frame(page, log_cb, "Sidebar Navigated")
                     continue
             except Exception:
                 pass
 
-            # Try direct navigation to key-management URL
+            # Direct navigation retry
             try:
                 await page.goto("https://indus.sarvam.ai/key-management", wait_until="domcontentloaded", timeout=20000)
                 await self._human_delay(2500, 3500)
+                await self.capture_frame(page, log_cb, "Key Management Reload")
             except Exception:
                 pass
 
-        # 3. Fill key name in dialog
+        # 4. Fill key name in dialog
         await log(f"Entering API key name: {key_name}...")
         filled = await page.evaluate("""
             (name) => {
@@ -303,8 +329,9 @@ class SarvamProvisioner:
                 logger.warning(f"Playwright fill fallback: {e}")
 
         await self._human_delay(800, 1500)
+        await self.capture_frame(page, log_cb, "Key Name Entered")
 
-        # 4. Click "Create key" submit button
+        # 5. Click "Create key" submit button
         await log("Submitting key creation form...")
         submitted = await page.evaluate("""
             () => {
@@ -328,8 +355,9 @@ class SarvamProvisioner:
                 logger.warning(f"Playwright submit fallback: {e}")
 
         await self._human_delay(2000, 3500)
+        await self.capture_frame(page, log_cb, "Key Confirmation Dialog")
 
-        # 5. Extract unmasked API key from confirmation dialog (polling up to 10 seconds)
+        # 6. Extract unmasked API key from confirmation dialog (polling up to 10 seconds)
         await log("Extracting unmasked API key from confirmation dialog...")
         api_key = None
 
@@ -379,7 +407,7 @@ class SarvamProvisioner:
                 except Exception as e:
                     logger.warning(f"Clipboard read warning: {e}")
 
-        # 6. Close the dialog by clicking "I have saved it"
+        # 7. Close the dialog by clicking "I have saved it"
         try:
             await page.evaluate("""
                 () => {
@@ -394,6 +422,7 @@ class SarvamProvisioner:
                 }
             """)
             await self._human_delay(500, 1000)
+            await self.capture_frame(page, log_cb, "Finished Key Creation")
         except Exception:
             pass
 
