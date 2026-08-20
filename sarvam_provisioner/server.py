@@ -56,7 +56,7 @@ async def provision_stream(req: ProvisionRequest, authorization: Optional[str] =
 
     target_count = max(1, min(req.count, 20))
     dry_run = req.dry_run
-    headless = req.headless
+    headless = True
 
     async def event_generator() -> AsyncGenerator[dict, None]:
         def now_str():

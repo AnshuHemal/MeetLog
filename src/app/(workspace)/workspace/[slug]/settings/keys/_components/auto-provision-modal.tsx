@@ -57,7 +57,7 @@ export function AutoProvisionModal({
 }: AutoProvisionModalProps) {
   const [count, setCount] = useState<number>(2);
   const [dryRun, setDryRun] = useState<boolean>(false);
-  const [headless, setHeadless] = useState<boolean>(false);
+  const [headless, setHeadless] = useState<boolean>(true);
   const [availableCredits, setAvailableCredits] = useState<number | null>(null);
   const [isLoadingCredits, setIsLoadingCredits] = useState<boolean>(false);
 

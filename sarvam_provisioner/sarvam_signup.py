@@ -24,9 +24,14 @@ class SarvamProvisioner:
         self.headless = Config.HEADLESS_MODE if headless is None else headless
 
     async def start(self):
+        import os
         self.playwright = await async_playwright().start()
+
+        has_display = bool(os.getenv("DISPLAY"))
+        is_headless = self.headless if has_display else True
+
         self.browser = await self.playwright.chromium.launch(
-            headless=self.headless,
+            headless=is_headless,
             args=[
                 "--disable-blink-features=AutomationControlled",
                 "--no-sandbox",
@@ -39,7 +44,7 @@ class SarvamProvisioner:
                 "--start-maximized",
             ],
         )
-        logger.info(f"Browser launched (headless={self.headless})")
+        logger.info(f"Browser launched (headless={is_headless})")
 
     async def stop(self):
         try:
