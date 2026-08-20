@@ -195,155 +195,58 @@ class SarvamProvisioner:
             if log_cb:
                 await log_cb({"type": "log", "line": msg})
 
-        # 1. Complete onboarding wizard steps until redirected away from /onboarding
-        try:
-            await log("Handling initial onboarding setup...")
-            for attempt in range(1, 15):
-                curr_url = page.url
-                await log(f"Checking onboarding status (attempt {attempt}/15, URL: {curr_url})...")
-                await self.capture_frame(page, log_cb, f"Onboarding Check {attempt}")
+        # 1. Complete onboarding wizard cleanly
+        if "onboarding" in page.url:
+            await log("Completing onboarding setup...")
+            try:
+                # Role: Developer
+                dev_loc = page.locator("text='Developer'").first
+                if await dev_loc.count() > 0 and await dev_loc.is_visible():
+                    await dev_loc.click()
+                    await log("Selected 'Developer' role.")
+                    await self._human_delay(400, 800)
 
-                if "onboarding" not in curr_url and attempt > 3:
-                    await log("Successfully exited onboarding wizard!")
-                    break
+                # Goal: Sarvam API
+                api_loc = page.locator("text='Sarvam API'").first
+                if await api_loc.count() > 0 and await api_loc.is_visible():
+                    await api_loc.click()
+                    await log("Selected 'Sarvam API' goal.")
+                    await self._human_delay(400, 800)
 
-                # Role: Developer (Click card containing "Developer")
-                dev_clicked = False
-                try:
-                    dev_locator = page.locator("text='Developer'").first
-                    if await dev_locator.count() > 0 and await dev_locator.is_visible():
-                        await dev_locator.click()
-                        dev_clicked = True
-                except Exception:
-                    pass
-
-                if not dev_clicked:
-                    dev_clicked = await page.evaluate("""
-                        () => {
-                            for (const el of document.querySelectorAll("div, button, [role='button'], a, li, span, p")) {
-                                const txt = (el.innerText || "").trim();
-                                if (txt.includes("Developer") && !txt.includes("Which role") && !txt.includes("Founder") && !txt.includes("Product") && txt.length < 50) {
-                                    el.click();
-                                    return true;
-                                }
-                            }
-                            return false;
-                        }
-                    """)
-
-                if dev_clicked:
-                    await log("Selected 'Developer' role card.")
-                    await self._human_delay(1000, 1800)
-                    await self.capture_frame(page, log_cb, "Selected Developer")
-
-                # Goal: Sarvam API (Click card containing "Sarvam API")
-                api_clicked = False
-                try:
-                    api_locator = page.locator("text='Sarvam API'").first
-                    if await api_locator.count() > 0 and await api_locator.is_visible():
-                        await api_locator.click()
-                        api_clicked = True
-                except Exception:
-                    pass
-
-                if not api_clicked:
-                    api_clicked = await page.evaluate("""
-                        () => {
-                            for (const el of document.querySelectorAll("div, button, [role='button'], a, li, span, p")) {
-                                const txt = (el.innerText || "").trim();
-                                if (txt.includes("Sarvam API") && !txt.includes("Which role") && !txt.includes("goal") && txt.length < 60) {
-                                    el.click();
-                                    return true;
-                                }
-                            }
-                            return false;
-                        }
-                    """)
-
-                if api_clicked:
-                    await log("Selected 'Sarvam API' goal card.")
-                    await self._human_delay(1000, 1800)
-                    await self.capture_frame(page, log_cb, "Selected Sarvam API")
-
-                # Continue / Continue to Sarvam API button
-                cont_text = None
-                try:
-                    cont_btn = page.locator("button:has-text('Continue to Sarvam API'), button:has-text('Continue'), button:has-text('Get Started'), button:has-text('Next')").first
-                    if await cont_btn.count() > 0 and await cont_btn.is_visible():
-                        cont_text = await cont_btn.inner_text()
-                        await cont_btn.click()
-                except Exception:
-                    pass
-
-                if not cont_text:
-                    cont_text = await page.evaluate("""
-                        () => {
-                            for (const el of document.querySelectorAll("button, [role='button'], a")) {
-                                const txt = (el.innerText || "").trim();
-                                if (txt === "Continue to Sarvam API" || txt === "Continue" || txt === "Get Started" || txt === "Next") {
-                                    el.click();
-                                    return txt;
-                                }
-                            }
-                            return null;
-                        }
-                    """)
-
-                if cont_text:
-                    await log(f"Clicked onboarding '{cont_text.strip()}' button.")
-                    await self._human_delay(2500, 4000)
-                    await self.capture_frame(page, log_cb, f"After '{cont_text.strip()}'")
-
-                await asyncio.sleep(1)
-        except Exception as e:
-            logger.warning(f"Onboarding flow check: {e}")
+                # Continue to Sarvam API
+                cont_btn = page.locator("button:has-text('Continue to Sarvam API'), button:has-text('Continue'), button:has-text('Get Started')").first
+                if await cont_btn.count() > 0 and await cont_btn.is_visible():
+                    await cont_btn.click()
+                    await log("Submitted onboarding choices.")
+                    await self._human_delay(1500, 2500)
+            except Exception as e:
+                logger.warning(f"Onboarding flow warning: {e}")
 
         keys_found: list[str] = []
 
-        # 2. Capture initial API key from welcome modal ("Here is your first API key to get started")
-        await log("Checking for 'Here is your first API key to get started' welcome modal...")
-        await self._human_delay(1500, 2500)
+        # 2. Fast Capture of initial API key from welcome modal ("Here is your first API key to get started")
+        await log("Capturing initial welcome API key...")
+        await self._human_delay(800, 1500)
 
         try:
             copy_btn = page.locator("button:has-text('Copy'), [aria-label*='copy' i], svg[class*='copy' i]").first
             if await copy_btn.count() > 0 and await copy_btn.is_visible():
                 await copy_btn.click()
-                await asyncio.sleep(0.5)
+                await asyncio.sleep(0.3)
                 cb_text = await page.evaluate("navigator.clipboard.readText()")
                 if cb_text and cb_text.strip().startswith("sk_") and not "*" in cb_text:
                     k1 = cb_text.strip()
                     keys_found.append(k1)
-                    await log(f"Captured initial API Key #1 from welcome modal: {k1[:8]}...{k1[-4:]}")
+                    await log(f"Captured initial API Key #1: {k1[:8]}...{k1[-4:]}")
         except Exception:
             pass
-
-        # Also regex match unmasked token if available
-        if len(keys_found) == 0:
-            try:
-                extracted = await page.evaluate("""
-                    () => {
-                        for (const el of document.querySelectorAll("input, textarea, code, pre")) {
-                            let val = (el.value || el.innerText || "").trim();
-                            if (val.startsWith("sk_") && val.length >= 24 && !val.includes("*")) return val;
-                        }
-                        const fullText = document.body.innerText || "";
-                        const match = fullText.match(/\\b(sk_[a-zA-Z0-9_-]{20,80})\\b/);
-                        if (match && !match[1].includes("*")) return match[1];
-                        return null;
-                    }
-                """)
-                if extracted and extracted not in keys_found:
-                    keys_found.append(extracted)
-                    await log(f"Captured initial API Key #1: {extracted[:8]}...{extracted[-4:]}")
-            except Exception:
-                pass
 
         # Close welcome modal by clicking "I have saved it"
         try:
             saved_btn = page.locator("button:has-text('I have saved it'), button:has-text('Done'), button:has-text('Close')").first
             if await saved_btn.count() > 0 and await saved_btn.is_visible():
                 await saved_btn.click()
-                await self._human_delay(800, 1500)
+                await self._human_delay(400, 800)
             else:
                 await page.evaluate("""
                     () => {
@@ -357,37 +260,17 @@ class SarvamProvisioner:
                         return false;
                     }
                 """)
-                await self._human_delay(800, 1500)
+                await self._human_delay(400, 800)
         except Exception:
             pass
 
-        # 3. Navigate directly to https://indus.sarvam.ai/key-management to create secondary API key
-        await log("Navigating to https://indus.sarvam.ai/key-management for secondary API key...")
+        # 3. Navigate directly to https://indus.sarvam.ai/key-management for secondary API key
+        await log("Navigating to https://indus.sarvam.ai/key-management...")
         try:
-            await page.goto("https://indus.sarvam.ai/key-management", wait_until="domcontentloaded", timeout=30000)
-            await self._human_delay(2000, 3000)
+            await page.goto("https://indus.sarvam.ai/key-management", wait_until="domcontentloaded", timeout=20000)
+            await self._human_delay(1000, 1800)
         except Exception as e:
             await log(f"Navigation warning: {e}")
-
-        # If redirected back to onboarding, complete whatever is visible
-        if "onboarding" in page.url:
-            await log("Completing onboarding redirect...")
-            await page.evaluate("""
-                () => {
-                    for (const el of document.querySelectorAll("div, button, [role='button']")) {
-                        const txt = (el.innerText || "").trim();
-                        if (txt.includes("Developer") || txt.includes("Sarvam API") || txt.includes("Continue")) {
-                            el.click();
-                        }
-                    }
-                }
-            """)
-            await self._human_delay(2000, 3000)
-            try:
-                await page.goto("https://indus.sarvam.ai/key-management", wait_until="domcontentloaded", timeout=20000)
-                await self._human_delay(2000, 3000)
-            except Exception:
-                pass
 
         # 4. If no initial key was found, try copying existing default key from table
         if len(keys_found) == 0:
@@ -395,58 +278,46 @@ class SarvamProvisioner:
                 copy_btn = page.locator("button:has-text('Copy'), [aria-label*='copy' i], svg[class*='copy' i]").first
                 if await copy_btn.count() > 0 and await copy_btn.is_visible():
                     await copy_btn.click()
-                    await asyncio.sleep(0.5)
+                    await asyncio.sleep(0.3)
                     cb_text = await page.evaluate("navigator.clipboard.readText()")
                     if cb_text and cb_text.strip().startswith("sk_") and not "*" in cb_text:
                         table_key = cb_text.strip()
                         if table_key not in keys_found:
                             keys_found.append(table_key)
-                            await log(f"Captured default table Key #1: {table_key[:8]}...{table_key[-4:]}")
+                            await log(f"Captured table default Key #1: {table_key[:8]}...{table_key[-4:]}")
             except Exception:
                 pass
 
-        # 5. Locate and click "+ Create API Key" to generate second key
+        # 5. Fast Click "+ Create API Key" to generate second key
         key_name = f"meetlog-pool-{random.randint(1000, 9999)}"
-        await log("Waiting for '+ Create API Key' button to render...")
-
         try:
-            await page.wait_for_selector(
-                "button:has-text('Create API Key'), button:has-text('+ Create API Key'), button:has-text('Create Key'), [role='button']:has-text('Create')",
-                state="visible",
-                timeout=20000
-            )
+            create_btn = page.locator("button:has-text('Create API Key'), button:has-text('+ Create API Key'), button:has-text('Create Key'), [role='button']:has-text('Create')").first
+            if await create_btn.count() > 0 and await create_btn.is_visible():
+                await create_btn.click()
+            else:
+                await page.evaluate("""
+                    () => {
+                        for (const el of document.querySelectorAll("button, [role='button'], a")) {
+                            const txt = (el.innerText || "").trim();
+                            if (txt.includes("Create API Key") || txt === "+ Create API Key" || txt === "Create Key") {
+                                el.click();
+                                return true;
+                            }
+                        }
+                        return false;
+                    }
+                """)
         except Exception:
             pass
 
-        create_btn = page.locator("button:has-text('Create API Key'), button:has-text('+ Create API Key'), button:has-text('Create Key'), button:has-text('+ Create')").first
-        if await create_btn.count() > 0 and await create_btn.is_visible():
-            await create_btn.click()
-            await log("Clicked '+ Create API Key' button.")
-        else:
-            await page.evaluate("""
-                () => {
-                    for (const el of document.querySelectorAll("button, [role='button'], a, div, span")) {
-                        const txt = (el.innerText || "").trim();
-                        if (txt.includes("Create API Key") || txt === "+ Create API Key" || txt === "Create Key") {
-                            el.click();
-                            return true;
-                        }
-                    }
-                    return false;
-                }
-            """)
-            await log("Triggered JS click on '+ Create API Key'.")
+        await self._human_delay(400, 800)
 
-        await self._human_delay(1000, 1800)
-
-        # 6. Fill key name in dialog using real native keystrokes
-        await log(f"Entering secondary API key name: {key_name}...")
+        # 6. Fast Fill name in dialog
+        await log(f"Entering API key name: {key_name}...")
         try:
             name_input = page.locator("input[placeholder*='production-app' i], input[placeholder*='name' i], input[type='text'], input").first
-            await name_input.wait_for(state="visible", timeout=12000)
-            await name_input.click()
-            await name_input.fill("")
-            await name_input.press_sequentially(key_name, delay=30)
+            await name_input.wait_for(state="visible", timeout=8000)
+            await name_input.fill(key_name)
         except Exception:
             await page.evaluate("""
                 (name) => {
@@ -465,9 +336,9 @@ class SarvamProvisioner:
                 }
             """, key_name)
 
-        await self._human_delay(800, 1200)
+        await self._human_delay(200, 400)
 
-        # 7. Click "Create key" submit button
+        # 7. Fast Submit secondary key creation form
         await log("Submitting secondary key creation form...")
         try:
             submit_btn = page.locator("button:has-text('Create key'), button:has-text('Create Key'), button:has-text('Create'), button[type='submit']").first
@@ -489,25 +360,22 @@ class SarvamProvisioner:
                 }
             """)
 
-        await self._human_delay(1500, 2500)
+        await self._human_delay(1000, 1800)
 
-        # 8. Extract unmasked API key from confirmation dialog (polling up to 15 seconds)
-        await log("Extracting unmasked API key from confirmation dialog...")
-        key_2 = None
-
-        for attempt_sec in range(15):
-            # Try clicking Copy button if available
+        # 8. Extract unmasked secondary API key
+        await log("Extracting secondary API key...")
+        for _ in range(8):
             try:
                 copy_btn = page.locator("button:has-text('Copy'), [aria-label*='copy' i], svg[class*='copy' i]").first
                 if await copy_btn.count() > 0 and await copy_btn.is_visible():
                     await copy_btn.click()
-                    await asyncio.sleep(0.5)
+                    await asyncio.sleep(0.3)
                     cb_text = await page.evaluate("navigator.clipboard.readText()")
                     if cb_text and cb_text.strip().startswith("sk_") and not "*" in cb_text:
                         if cb_text.strip() not in keys_found:
-                            key_2 = cb_text.strip()
-                            keys_found.append(key_2)
-                            await log(f"API Key #2 extracted via clipboard: {key_2[:8]}...{key_2[-4:]}")
+                            k2 = cb_text.strip()
+                            keys_found.append(k2)
+                            await log(f"Captured secondary API Key #2: {k2[:8]}...{k2[-4:]}")
                             break
             except Exception:
                 pass
@@ -526,14 +394,13 @@ class SarvamProvisioner:
                     }
                 """)
                 if extracted_token and extracted_token not in keys_found:
-                    key_2 = extracted_token
-                    keys_found.append(key_2)
-                    await log(f"API Key #2 extracted from dialog: {key_2[:8]}...{key_2[-4:]}")
+                    keys_found.append(extracted_token)
+                    await log(f"Captured secondary API Key #2: {extracted_token[:8]}...{extracted_token[-4:]}")
                     break
             except Exception:
                 pass
 
-            await asyncio.sleep(1)
+            await asyncio.sleep(0.5)
 
         # 9. Close the dialog by clicking "I have saved it"
         try:
@@ -553,10 +420,10 @@ class SarvamProvisioner:
                         return false;
                     }
                 """)
-            await self._human_delay(500, 1000)
+            await self._human_delay(300, 600)
         except Exception:
             pass
 
         unique_keys = list(dict.fromkeys(keys_found))
-        await log(f"Account completed: Harvested {len(unique_keys)} active API Key(s)!")
+        await log(f"Account completed: Successfully harvested {len(unique_keys)} active API Key(s)!")
         return unique_keys
