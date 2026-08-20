@@ -225,28 +225,33 @@ class SarvamProvisioner:
                     pass
 
             await log("Onboarding Step 4: Extracting API key from dialog or page...")
-            for sel in ["input[readonly]", "input[type='text']", "code", "pre", "span", "div", "td", "p"]:
-                for el in await page.locator(sel).all():
-                    try:
-                        val = await el.get_attribute("value")
-                        if not val:
-                            val = await el.inner_text()
-                        val = (val or "").strip()
-                        if val and 20 <= len(val) <= 80 and (" " not in val) and not val.startswith("http") and ("*" not in val) and ("•" not in val) and not val.startswith("Account") and not val.startswith("Developer"):
-                            await log(f"API key extracted from element: {val[:8]}...{val[-4:]}")
-                            return val
-                    except Exception:
-                        pass
+            extracted_key = await page.evaluate("""
+                () => {
+                    const candidateSelectors = ["input", "textarea", "code", "pre", "span", "p", "div", "td"];
+                    for (const sel of candidateSelectors) {
+                        for (const el of document.querySelectorAll(sel)) {
+                            let val = (el.value || el.innerText || "").trim();
+                            if (val && val.length >= 24 && val.length <= 80 && !val.includes(" ") && !val.startsWith("http") && !val.includes("*") && !val.includes("•") && !val.startsWith("Account") && !val.startsWith("Developer") && !val.startsWith("Sarvam")) {
+                                return val;
+                            }
+                        }
+                    }
+                    return null;
+                }
+            """)
+            if extracted_key:
+                await log(f"API key extracted from modal: {extracted_key[:8]}...{extracted_key[-4:]}")
+                return extracted_key
 
             copy_btn = page.locator("button:has-text('Copy'), [aria-label*='copy' i], svg[class*='copy' i]").first
             try:
                 if await copy_btn.count() > 0 and await copy_btn.is_visible():
                     await log("Clicking modal 'Copy' button...")
                     await copy_btn.click()
-                    await self._human_delay(800, 1500)
+                    await self._human_delay(500, 1000)
 
                     clipboard_text = await page.evaluate("navigator.clipboard.readText()")
-                    if clipboard_text and len(clipboard_text) >= 15:
+                    if clipboard_text and len(clipboard_text.strip()) >= 15:
                         api_key = clipboard_text.strip()
                         await log(f"API key extracted via clipboard: {api_key[:8]}...{api_key[-4:]}")
                         return api_key
@@ -269,19 +274,26 @@ class SarvamProvisioner:
         if api_key:
             return api_key
 
-        for dash_url in ["https://indus.sarvam.ai/developer", "https://dashboard.sarvam.ai/developer", "https://indus.sarvam.ai/api-keys", "https://indus.sarvam.ai/"]:
+        for dash_url in ["https://indus.sarvam.ai/developer", "https://dashboard.sarvam.ai/developer", "https://indus.sarvam.ai/api-keys"]:
             try:
                 await log(f"Navigating to developer dashboard ({dash_url})...")
                 await page.goto(dash_url, wait_until="domcontentloaded", timeout=30000)
-                await self._human_delay(3000, 4500)
+                await self._human_delay(2000, 3000)
 
-                for sel in ["input[readonly]", "code", "pre", "[class*='key']", "td", "span", "div"]:
-                    for el in await page.locator(sel).all():
-                        val = (await el.get_attribute("value")) or (await el.inner_text()) or ""
-                        val = val.strip()
-                        if val and 20 <= len(val) <= 80 and (" " not in val) and not val.startswith("http") and not val.startswith("Developer"):
-                            await log(f"API key found in dashboard table: {val[:8]}...{val[-4:]}")
-                            return val
+                table_key = await page.evaluate("""
+                    () => {
+                        for (const el of document.querySelectorAll("input, textarea, code, pre, [class*='key'], td, span")) {
+                            let val = (el.value || el.innerText || "").trim();
+                            if (val && val.length >= 24 && val.length <= 80 && !val.includes(" ") && !val.startsWith("http") && !val.startsWith("Developer") && !val.startsWith("Account")) {
+                                return val;
+                            }
+                        }
+                        return null;
+                    }
+                """)
+                if table_key:
+                    await log(f"API key found in dashboard table: {table_key[:8]}...{table_key[-4:]}")
+                    return table_key
 
                 key_triggers = [
                     "button:has-text('Generate API Key')",
@@ -297,7 +309,7 @@ class SarvamProvisioner:
                     if await el.count() > 0 and await el.is_visible():
                         await log(f"Clicking API key trigger ({tr})...")
                         await el.click()
-                        await self._human_delay(1500, 2500)
+                        await self._human_delay(1200, 2000)
 
                         name_input = page.locator("input[name='name'], input[placeholder*='name' i], input[placeholder*='key' i]").first
                         if await name_input.count() > 0 and await name_input.is_visible():
@@ -307,15 +319,22 @@ class SarvamProvisioner:
                             confirm_btn = page.locator("button:has-text('Create'), button:has-text('Generate'), button:has-text('Save'), button[type='submit']").first
                             if await confirm_btn.count() > 0 and await confirm_btn.is_visible():
                                 await confirm_btn.click()
-                                await self._human_delay(2500, 4000)
+                                await self._human_delay(2000, 3500)
 
-                        for sel in ["input[readonly]", "code", "pre", "[class*='key']", "span", "div"]:
-                            for el in await page.locator(sel).all():
-                                val = (await el.inner_text()) or (await el.get_attribute("value")) or ""
-                                val = val.strip()
-                                if val and 20 <= len(val) <= 80 and (" " not in val) and not val.startswith("http"):
-                                    await log(f"Newly generated API key extracted: {val[:8]}...{val[-4:]}")
-                                    return val
+                        created_key = await page.evaluate("""
+                            () => {
+                                for (const el of document.querySelectorAll("input, textarea, code, pre, [class*='key'], span, div")) {
+                                    let val = (el.value || el.innerText || "").trim();
+                                    if (val && val.length >= 24 && val.length <= 80 && !val.includes(" ") && !val.startsWith("http")) {
+                                        return val;
+                                    }
+                                }
+                                return null;
+                            }
+                        """)
+                        if created_key:
+                            await log(f"Newly generated API key extracted: {created_key[:8]}...{created_key[-4:]}")
+                            return created_key
             except Exception as e:
                 logger.warning(f"Failed fallback navigation to {dash_url}: {e}")
 
