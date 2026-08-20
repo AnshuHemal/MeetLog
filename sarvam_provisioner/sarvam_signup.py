@@ -208,45 +208,42 @@ class SarvamProvisioner:
             except Exception as e:
                 logger.warning(f"Continue button not clicked: {e}")
 
-            logger.info("Onboarding Step 4: Extracting API key from welcome dialog...")
-
-            if context:
-                try:
-                    await context.grant_permissions(["clipboard-read", "clipboard-write"])
-                except Exception:
-                    pass
-
-            copy_btn = page.get_by_text("Copy", exact=True).first
-            try:
-                await copy_btn.wait_for(state="visible", timeout=20000)
-                logger.info("Clicking modal 'Copy' button...")
-                await copy_btn.click()
-                await self._human_delay(800, 1500)
-
-                clipboard_text = await page.evaluate("navigator.clipboard.readText()")
-                if clipboard_text and len(clipboard_text) >= 15:
-                    api_key = clipboard_text.strip()
-                    logger.info(f"API key successfully extracted via clipboard: {api_key[:8]}...{api_key[-4:]}")
-
+            # First try extracting directly from any inputs/code tags
+            for sel in ["input[readonly]", "input[type='text']", "code", "pre", "span", "div"]:
+                for el in await page.locator(sel).all():
                     try:
-                        save_btn = page.get_by_text("I have saved it", exact=False).first
-                        if await save_btn.count() > 0 and await save_btn.is_visible():
-                            await save_btn.click()
+                        val = await el.get_attribute("value")
+                        if not val:
+                            val = await el.inner_text()
+                        val = (val or "").strip()
+                        if val and 20 <= len(val) <= 80 and (" " not in val) and not val.startswith("http") and ("*" not in val) and ("•" not in val) and not val.startswith("Account"):
+                            logger.info(f"API key extracted from element: {val[:8]}...{val[-4:]}")
+                            return val
                     except Exception:
                         pass
 
-                    return api_key
-            except Exception as e:
-                logger.warning(f"Copy button not clicked or clipboard error: {e}")
+            copy_btn = page.locator("button:has-text('Copy'), [aria-label*='copy' i], svg[class*='copy' i]").first
+            try:
+                if await copy_btn.count() > 0 and await copy_btn.is_visible():
+                    logger.info("Clicking modal 'Copy' button...")
+                    await copy_btn.click()
+                    await self._human_delay(800, 1500)
 
-            for el in await page.locator("code, pre, input, span, div").all():
-                val = await el.get_attribute("value")
-                if not val:
-                    val = await el.inner_text()
-                val = (val or "").strip()
-                if val and len(val) >= 25 and (" " not in val) and not val.startswith("http") and ("*" not in val) and ("•" not in val):
-                    logger.info(f"API key extracted from dialog element: {val[:8]}...{val[-4:]}")
-                    return val
+                    clipboard_text = await page.evaluate("navigator.clipboard.readText()")
+                    if clipboard_text and len(clipboard_text) >= 15:
+                        api_key = clipboard_text.strip()
+                        logger.info(f"API key successfully extracted via clipboard: {api_key[:8]}...{api_key[-4:]}")
+
+                        try:
+                            save_btn = page.locator("button:has-text('I have saved it'), button:has-text('Done'), button:has-text('Close')").first
+                            if await save_btn.count() > 0 and await save_btn.is_visible():
+                                await save_btn.click()
+                        except Exception:
+                            pass
+
+                        return api_key
+            except Exception as e:
+                logger.warning(f"Copy button / clipboard extraction warning: {e}")
 
             return None
 
