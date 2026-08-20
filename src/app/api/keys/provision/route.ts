@@ -43,7 +43,8 @@ export async function POST(req: NextRequest) {
     const remoteServiceUrl =
       process.env.PROVISIONER_SERVICE_URL || "https://meetlog-sarvam-provisioner.onrender.com";
 
-    if (remoteServiceUrl) {
+    // If headless is true, route to cloud microservice; if headed (visible window), execute locally so user physically sees Chrome
+    if (remoteServiceUrl && headless) {
       try {
         console.log(`[PROVISION PROXY] Forwarding request to remote provisioner: ${remoteServiceUrl}...`);
         const remoteRes = await fetch(`${remoteServiceUrl.replace(/\/$/, "")}/provision`, {

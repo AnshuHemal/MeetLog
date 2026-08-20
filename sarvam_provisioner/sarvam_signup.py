@@ -262,24 +262,35 @@ class SarvamProvisioner:
         await log("Navigating directly to https://indus.sarvam.ai/key-management...")
         try:
             await page.goto("https://indus.sarvam.ai/key-management", wait_until="domcontentloaded", timeout=30000)
-            await self._human_delay(2500, 4000)
-            await self.capture_frame(page, log_cb, "Key Management Dashboard")
+            await self._human_delay(2000, 3000)
+            await self.capture_frame(page, log_cb, "Key Management Page Loaded")
         except Exception as e:
             await log(f"Navigation warning: {e}")
 
-        # 3. Locate and click "+ Create API Key"
+        # 3. Locate and click "+ Create API Key" with React hydration wait
         key_name = f"meetlog-pool-{random.randint(1000, 9999)}"
-        clicked_create = False
+        await log("Waiting for '+ Create API Key' button to render...")
 
-        for attempt in range(1, 6):
-            await log(f"Searching for '+ Create API Key' (attempt {attempt}/5, URL: {page.url})...")
+        try:
+            await page.wait_for_selector(
+                "button:has-text('Create API Key'), button:has-text('+ Create API Key'), button:has-text('Create Key'), [role='button']:has-text('Create')",
+                state="visible",
+                timeout=20000
+            )
+        except Exception:
+            pass
 
-            # Try direct JS evaluation click
-            clicked = await page.evaluate("""
+        create_btn = page.locator("button:has-text('Create API Key'), button:has-text('+ Create API Key'), button:has-text('Create Key'), button:has-text('+ Create')").first
+        if await create_btn.count() > 0 and await create_btn.is_visible():
+            await create_btn.click()
+            await log("Clicked '+ Create API Key' button.")
+        else:
+            # Fallback JS click
+            await page.evaluate("""
                 () => {
                     for (const el of document.querySelectorAll("button, [role='button'], a, div, span")) {
                         const txt = (el.innerText || "").trim();
-                        if (txt.includes("Create API Key") || txt === "+ Create API Key" || txt === "Create Key" || txt === "+ Create") {
+                        if (txt.includes("Create API Key") || txt === "+ Create API Key" || txt === "Create Key") {
                             el.click();
                             return true;
                         }
@@ -287,95 +298,76 @@ class SarvamProvisioner:
                     return false;
                 }
             """)
-            if clicked:
-                await log("Clicked '+ Create API Key' button.")
-                clicked_create = True
-                await self._human_delay(1500, 2500)
-                await self.capture_frame(page, log_cb, "Create Key Dialog Opened")
-                break
+            await log("Triggered JS click on '+ Create API Key'.")
 
-            # Try sidebar navigation link (strict href)
-            try:
-                sidebar_link = page.locator("a[href*='key-management']").first
-                if await sidebar_link.count() > 0 and await sidebar_link.is_visible():
-                    await log("Clicking sidebar 'API Keys' link...")
-                    await sidebar_link.click()
-                    await self._human_delay(2000, 3000)
-                    await self.capture_frame(page, log_cb, "Sidebar Navigated")
-                    continue
-            except Exception:
-                pass
-
-            # Direct navigation retry
-            try:
-                await page.goto("https://indus.sarvam.ai/key-management", wait_until="domcontentloaded", timeout=20000)
-                await self._human_delay(2500, 3500)
-                await self.capture_frame(page, log_cb, "Key Management Reload")
-            except Exception:
-                pass
+        await self._human_delay(1200, 2000)
+        await self.capture_frame(page, log_cb, "Create Key Dialog Opened")
 
         # 4. Fill key name in dialog
         await log(f"Entering API key name: {key_name}...")
-        filled = await page.evaluate("""
-            (name) => {
-                const inp = document.querySelector("input[placeholder*='production-app' i]") || 
-                            document.querySelector("input[placeholder*='name' i]") || 
-                            document.querySelector("input[type='text']") || 
-                            document.querySelector("input");
-                if (inp) {
-                    inp.focus();
-                    inp.value = name;
-                    inp.dispatchEvent(new Event('input', { bubbles: true }));
-                    inp.dispatchEvent(new Event('change', { bubbles: true }));
-                    return true;
+        try:
+            await page.wait_for_selector(
+                "input[placeholder*='production-app' i], input[placeholder*='name' i], input[type='text'], input",
+                state="visible",
+                timeout=12000
+            )
+            name_input = page.locator("input[placeholder*='production-app' i], input[placeholder*='name' i], input[type='text'], input").first
+            await name_input.fill(key_name)
+        except Exception:
+            await page.evaluate("""
+                (name) => {
+                    const inp = document.querySelector("input[placeholder*='production-app' i]") || 
+                                document.querySelector("input[placeholder*='name' i]") || 
+                                document.querySelector("input[type='text']") || 
+                                document.querySelector("input");
+                    if (inp) {
+                        inp.focus();
+                        inp.value = name;
+                        inp.dispatchEvent(new Event('input', { bubbles: true }));
+                        inp.dispatchEvent(new Event('change', { bubbles: true }));
+                    }
                 }
-                return false;
-            }
-        """, key_name)
-
-        if not filled:
-            try:
-                name_input = page.locator("input[placeholder*='production-app' i], input[type='text'], input").first
-                if await name_input.count() > 0:
-                    await name_input.fill(key_name)
-                    filled = True
-            except Exception as e:
-                logger.warning(f"Playwright fill fallback: {e}")
+            """, key_name)
 
         await self._human_delay(800, 1500)
         await self.capture_frame(page, log_cb, "Key Name Entered")
 
         # 5. Click "Create key" submit button
         await log("Submitting key creation form...")
-        submitted = await page.evaluate("""
-            () => {
-                for (const b of document.querySelectorAll("button, [role='button'], input[type='submit']")) {
-                    const txt = (b.innerText || b.value || "").trim();
-                    if (txt === "Create key" || txt === "Create" || txt === "Save") {
-                        b.click();
-                        return true;
+        submit_btn = page.locator("button:has-text('Create key'), button:has-text('Create'), button[type='submit']").first
+        if await submit_btn.count() > 0 and await submit_btn.is_visible():
+            await submit_btn.click()
+        else:
+            await page.evaluate("""
+                () => {
+                    for (const b of document.querySelectorAll("button, [role='button'], input[type='submit']")) {
+                        const txt = (b.innerText || b.value || "").trim();
+                        if (txt === "Create key" || txt === "Create" || txt === "Save") {
+                            b.click();
+                            return true;
+                        }
                     }
+                    return false;
                 }
-                return false;
-            }
-        """)
-
-        if not submitted:
-            try:
-                submit_btn = page.locator("button:has-text('Create key'), button:has-text('Create'), button[type='submit']").first
-                if await submit_btn.count() > 0:
-                    await submit_btn.click()
-            except Exception as e:
-                logger.warning(f"Playwright submit fallback: {e}")
+            """)
 
         await self._human_delay(2000, 3500)
         await self.capture_frame(page, log_cb, "Key Confirmation Dialog")
 
-        # 6. Extract unmasked API key from confirmation dialog (polling up to 10 seconds)
+        # 6. Extract unmasked API key from confirmation dialog (polling up to 12 seconds)
         await log("Extracting unmasked API key from confirmation dialog...")
+        try:
+            await page.wait_for_selector(
+                "button:has-text('I have saved it'), button:has-text('Copy'), input[value*='sk_']",
+                state="visible",
+                timeout=12000
+            )
+        except Exception:
+            pass
+
         api_key = None
 
-        for _ in range(10):
+        for _ in range(12):
             try:
                 extracted_token = await page.evaluate("""
                     () => {
@@ -398,19 +390,9 @@ class SarvamProvisioner:
 
         # Fallback to Copy button
         if not api_key:
-            copy_clicked = await page.evaluate("""
-                () => {
-                    for (const b of document.querySelectorAll("button, [role='button']")) {
-                        const txt = (b.innerText || "").trim();
-                        if (txt === "Copy" || b.getAttribute("aria-label")?.includes("copy")) {
-                            b.click();
-                            return true;
-                        }
-                    }
-                    return false;
-                }
-            """)
-            if copy_clicked:
+            copy_btn = page.locator("button:has-text('Copy'), [aria-label*='copy' i], svg[class*='copy' i]").first
+            if await copy_btn.count() > 0 and await copy_btn.is_visible():
+                await copy_btn.click()
                 await log("Clicked modal 'Copy' button.")
                 await self._human_delay(500, 1000)
                 try:
@@ -423,20 +405,24 @@ class SarvamProvisioner:
 
         # 7. Close the dialog by clicking "I have saved it"
         try:
-            await page.evaluate("""
-                () => {
-                    for (const b of document.querySelectorAll("button, [role='button']")) {
-                        const txt = (b.innerText || "").trim();
-                        if (txt.includes("I have saved it") || txt === "Done" || txt === "Close") {
-                            b.click();
-                            return true;
+            saved_btn = page.locator("button:has-text('I have saved it'), button:has-text('Done'), button:has-text('Close')").first
+            if await saved_btn.count() > 0 and await saved_btn.is_visible():
+                await saved_btn.click()
+            else:
+                await page.evaluate("""
+                    () => {
+                        for (const b of document.querySelectorAll("button, [role='button']")) {
+                            const txt = (b.innerText || "").trim();
+                            if (txt.includes("I have saved it") || txt === "Done" || txt === "Close") {
+                                b.click();
+                                return true;
+                            }
                         }
+                        return false;
                     }
-                    return false;
-                }
-            """)
+                """)
             await self._human_delay(500, 1000)
-            await self.capture_frame(page, log_cb, "Finished Key Creation")
+            await self.capture_frame(page, log_cb, "Key Saved & Done")
         except Exception:
             pass
 
