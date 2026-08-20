@@ -94,59 +94,23 @@ class SarvamProvisioner:
 
         try:
             logger.info(f"[{email}] Step 1: Navigating to Sarvam registration...")
-            await page.goto("https://login.sarvam.ai/registration", wait_until="networkidle", timeout=45000)
+            await page.goto("https://login.sarvam.ai/registration", wait_until="domcontentloaded", timeout=40000)
             await self._human_delay(1500, 2500)
 
             logger.info(f"[{email}] Step 2: Entering email address...")
-            email_selectors = [
-                "input[name='traits.email']",
-                "input[name='identifier']",
-                "input[name='email']",
-                "input[type='email']",
-                "input[placeholder*='email' i]",
-                "input[autocomplete='email']",
-                "input:not([type='hidden'])",
-            ]
-
-            identifier_input = None
-            for sel in email_selectors:
-                loc = page.locator(sel).first
-                if await loc.count() > 0:
-                    try:
-                        await loc.wait_for(state="visible", timeout=5000)
-                        identifier_input = loc
-                        break
-                    except Exception:
-                        pass
-
-            if not identifier_input:
-                identifier_input = page.locator("input[name='traits.email'], input[name='identifier'], input[type='email']").first
-                await identifier_input.wait_for(state="visible", timeout=25000)
-
+            identifier_input = page.locator("input[name='identifier'], input[placeholder*='Email' i], input[type='text']:not([type='hidden']), input[type='email']").first
+            await identifier_input.wait_for(state="visible", timeout=30000)
             await identifier_input.click()
             await identifier_input.fill(email)
             await self._human_delay(500, 1000)
 
-            continue_btn = page.locator("button:has-text('Continue'), button:has-text('Next'), button[type='submit']").first
+            continue_btn = page.locator("button:has-text('Continue'), button[type='submit']").first
             await continue_btn.click()
-            await self._human_delay(2500, 3500)
+            await self._human_delay(2000, 3500)
 
             logger.info(f"[{email}] Step 3: Entering name and password...")
-            name_input = None
-            for sel in ["input[name='traits.name']", "input[name='name']", "input[placeholder*='name' i]", "input:not([type='password']):not([type='hidden'])"]:
-                loc = page.locator(sel).first
-                if await loc.count() > 0:
-                    try:
-                        await loc.wait_for(state="visible", timeout=5000)
-                        name_input = loc
-                        break
-                    except Exception:
-                        pass
-
-            if not name_input:
-                name_input = page.locator("input[name='traits.name'], input[placeholder*='Name' i]").first
-                await name_input.wait_for(state="visible", timeout=20000)
-
+            name_input = page.locator("input[name='traits.name'], input[placeholder*='Full Name' i], input[placeholder*='Name' i]").first
+            await name_input.wait_for(state="visible", timeout=25000)
             await name_input.click()
             await name_input.fill(name)
             await self._human_delay(400, 800)
