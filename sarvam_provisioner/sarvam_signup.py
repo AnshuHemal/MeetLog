@@ -177,55 +177,63 @@ class SarvamProvisioner:
             logger.error(f"OTP verification error: {e}")
             return False
 
-    async def complete_onboarding_and_extract_key(self, page: Page, context) -> Optional[str]:
+    async def complete_onboarding_and_extract_key(self, page: Page, context=None, log_cb=None) -> Optional[str]:
+        async def log(msg: str):
+            logger.info(msg)
+            if log_cb:
+                await log_cb(msg)
+
         try:
-            logger.info(f"Handling post-signup onboarding (Current URL: {page.url})...")
+            await log(f"Checking post-signup onboarding (URL: {page.url})...")
             await page.wait_for_load_state("domcontentloaded", timeout=15000)
             await self._human_delay(2000, 3000)
 
-            logger.info("Onboarding Step 1: Selecting 'Developer' role...")
+            await log("Onboarding Step 1: Selecting 'Developer' role...")
             for dev_sel in ["button:has-text('Developer')", "[role='button']:has-text('Developer')", "div:has-text('Developer')", "span:has-text('Developer')"]:
                 try:
                     dev_btn = page.locator(dev_sel).first
                     if await dev_btn.count() > 0 and await dev_btn.is_visible():
                         await dev_btn.click()
                         await self._human_delay(1500, 2500)
+                        await log("Selected 'Developer' role.")
                         break
                 except Exception:
                     pass
 
-            logger.info("Onboarding Step 2: Selecting 'Sarvam API' goal...")
+            await log("Onboarding Step 2: Selecting 'Sarvam API' goal...")
             for api_sel in ["button:has-text('Sarvam API')", "[role='button']:has-text('Sarvam API')", "div:has-text('Sarvam API')", "span:has-text('Sarvam API')"]:
                 try:
                     api_btn = page.locator(api_sel).first
                     if await api_btn.count() > 0 and await api_btn.is_visible():
                         await api_btn.click()
                         await self._human_delay(1500, 2500)
+                        await log("Selected 'Sarvam API' goal.")
                         break
                 except Exception:
                     pass
 
-            logger.info("Onboarding Step 3: Clicking 'Continue'...")
+            await log("Onboarding Step 3: Clicking 'Continue'...")
             for cont_sel in ["button:has-text('Continue to Sarvam API')", "button:has-text('Continue')", "button:has-text('Get Started')", "button:has-text('Next')"]:
                 try:
                     continue_btn = page.locator(cont_sel).first
                     if await continue_btn.count() > 0 and await continue_btn.is_visible():
                         await continue_btn.click()
                         await self._human_delay(3000, 5000)
+                        await log("Submitted onboarding choices.")
                         break
                 except Exception:
                     pass
 
-            logger.info("Onboarding Step 4: Extracting API key...")
-            for sel in ["input[readonly]", "input[type='text']", "code", "pre", "span", "div", "td"]:
+            await log("Onboarding Step 4: Extracting API key from dialog or page...")
+            for sel in ["input[readonly]", "input[type='text']", "code", "pre", "span", "div", "td", "p"]:
                 for el in await page.locator(sel).all():
                     try:
                         val = await el.get_attribute("value")
                         if not val:
                             val = await el.inner_text()
                         val = (val or "").strip()
-                        if val and 20 <= len(val) <= 80 and (" " not in val) and not val.startswith("http") and ("*" not in val) and ("•" not in val) and not val.startswith("Account"):
-                            logger.info(f"API key extracted from element: {val[:8]}...{val[-4:]}")
+                        if val and 20 <= len(val) <= 80 and (" " not in val) and not val.startswith("http") and ("*" not in val) and ("•" not in val) and not val.startswith("Account") and not val.startswith("Developer"):
+                            await log(f"API key extracted from element: {val[:8]}...{val[-4:]}")
                             return val
                     except Exception:
                         pass
@@ -233,14 +241,14 @@ class SarvamProvisioner:
             copy_btn = page.locator("button:has-text('Copy'), [aria-label*='copy' i], svg[class*='copy' i]").first
             try:
                 if await copy_btn.count() > 0 and await copy_btn.is_visible():
-                    logger.info("Clicking modal 'Copy' button...")
+                    await log("Clicking modal 'Copy' button...")
                     await copy_btn.click()
                     await self._human_delay(800, 1500)
 
                     clipboard_text = await page.evaluate("navigator.clipboard.readText()")
                     if clipboard_text and len(clipboard_text) >= 15:
                         api_key = clipboard_text.strip()
-                        logger.info(f"API key successfully extracted via clipboard: {api_key[:8]}...{api_key[-4:]}")
+                        await log(f"API key extracted via clipboard: {api_key[:8]}...{api_key[-4:]}")
                         return api_key
             except Exception as e:
                 logger.warning(f"Copy button / clipboard extraction warning: {e}")
@@ -248,26 +256,31 @@ class SarvamProvisioner:
             return None
 
         except Exception as e:
-            logger.error(f"Onboarding flow error: {e}")
+            await log(f"Onboarding flow error: {e}")
             return None
 
-    async def generate_api_key(self, page: Page, context=None) -> Optional[str]:
-        api_key = await self.complete_onboarding_and_extract_key(page, context)
+    async def generate_api_key(self, page: Page, context=None, log_cb=None) -> Optional[str]:
+        async def log(msg: str):
+            logger.info(msg)
+            if log_cb:
+                await log_cb(msg)
+
+        api_key = await self.complete_onboarding_and_extract_key(page, context, log_cb=log_cb)
         if api_key:
             return api_key
 
-        for dash_url in ["https://indus.sarvam.ai/developer", "https://dashboard.sarvam.ai/developer", "https://indus.sarvam.ai/"]:
+        for dash_url in ["https://indus.sarvam.ai/developer", "https://dashboard.sarvam.ai/developer", "https://indus.sarvam.ai/api-keys", "https://indus.sarvam.ai/"]:
             try:
-                logger.info(f"Fallback: Navigating to {dash_url}...")
+                await log(f"Navigating to developer dashboard ({dash_url})...")
                 await page.goto(dash_url, wait_until="domcontentloaded", timeout=30000)
                 await self._human_delay(3000, 4500)
 
-                for sel in ["input[readonly]", "code", "pre", "[class*='key']", "td"]:
+                for sel in ["input[readonly]", "code", "pre", "[class*='key']", "td", "span", "div"]:
                     for el in await page.locator(sel).all():
                         val = (await el.get_attribute("value")) or (await el.inner_text()) or ""
                         val = val.strip()
-                        if val and 20 <= len(val) <= 80 and (" " not in val) and not val.startswith("http"):
-                            logger.info(f"API key extracted from table: {val[:8]}...{val[-4:]}")
+                        if val and 20 <= len(val) <= 80 and (" " not in val) and not val.startswith("http") and not val.startswith("Developer"):
+                            await log(f"API key found in dashboard table: {val[:8]}...{val[-4:]}")
                             return val
 
                 key_triggers = [
@@ -276,12 +289,13 @@ class SarvamProvisioner:
                     "button:has-text('Create Key')",
                     "button:has-text('New API Key')",
                     "button:has-text('Generate Key')",
+                    "button:has-text('+ Create')",
                 ]
 
                 for tr in key_triggers:
                     el = page.locator(tr).first
                     if await el.count() > 0 and await el.is_visible():
-                        logger.info(f"Clicking API key trigger ({tr})...")
+                        await log(f"Clicking API key trigger ({tr})...")
                         await el.click()
                         await self._human_delay(1500, 2500)
 
@@ -295,15 +309,15 @@ class SarvamProvisioner:
                                 await confirm_btn.click()
                                 await self._human_delay(2500, 4000)
 
-                        for sel in ["code", "pre", "[class*='key']", "input[readonly]"]:
+                        for sel in ["input[readonly]", "code", "pre", "[class*='key']", "span", "div"]:
                             for el in await page.locator(sel).all():
                                 val = (await el.inner_text()) or (await el.get_attribute("value")) or ""
                                 val = val.strip()
-                                if val and 20 <= len(val) <= 80 and (" " not in val):
-                                    logger.info(f"API key successfully extracted: {val[:8]}...{val[-4:]}")
+                                if val and 20 <= len(val) <= 80 and (" " not in val) and not val.startswith("http"):
+                                    await log(f"Newly generated API key extracted: {val[:8]}...{val[-4:]}")
                                     return val
             except Exception as e:
                 logger.warning(f"Failed fallback navigation to {dash_url}: {e}")
 
-        logger.warning("Could not extract API key from any dashboard flow")
+        await log("Could not extract API key from any dashboard flow.")
         return None

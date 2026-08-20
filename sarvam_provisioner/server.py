@@ -257,7 +257,31 @@ async def provision_stream(req: ProvisionRequest, authorization: Optional[str] =
                     })
                 }
 
-                api_key = await sarvam.generate_api_key(page, context=context)
+                log_queue = asyncio.Queue()
+
+                async def log_callback(msg: str):
+                    await log_queue.put(msg)
+
+                key_task = asyncio.create_task(sarvam.generate_api_key(page, context=context, log_cb=log_callback))
+
+                while not key_task.done():
+                    try:
+                        msg = await asyncio.wait_for(log_queue.get(), timeout=0.8)
+                        yield {
+                            "event": "log",
+                            "data": json.dumps({"line": msg, "timestamp": now_str()})
+                        }
+                    except asyncio.TimeoutError:
+                        pass
+
+                while not log_queue.empty():
+                    msg = log_queue.get_nowait()
+                    yield {
+                        "event": "log",
+                        "data": json.dumps({"line": msg, "timestamp": now_str()})
+                    }
+
+                api_key = await key_task
                 if not api_key:
                     yield {
                         "event": "log",
