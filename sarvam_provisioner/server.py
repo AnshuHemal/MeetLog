@@ -2,7 +2,7 @@
 import asyncio
 import json
 import os
-from typing import AsyncGenerator
+from typing import AsyncGenerator, Optional
 from fastapi import FastAPI, HTTPException, Header
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
@@ -47,7 +47,7 @@ def stats():
     return db_writer.get_pool_stats()
 
 @app.post("/provision")
-async def provision_stream(req: ProvisionRequest, authorization: str = Header(None)):
+async def provision_stream(req: ProvisionRequest, authorization: Optional[str] = Header(default=None)):
     expected_token = os.getenv("PROVISIONER_AUTH_TOKEN")
     if expected_token:
         token = (authorization or "").replace("Bearer ", "").strip()

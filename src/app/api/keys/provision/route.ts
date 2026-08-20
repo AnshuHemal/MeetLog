@@ -54,7 +54,8 @@ export async function POST(req: NextRequest) {
         });
 
         if (!remoteRes.ok || !remoteRes.body) {
-          throw new Error(`Remote provisioner returned HTTP ${remoteRes.status}`);
+          const errDetail = await remoteRes.text().catch(() => "");
+          throw new Error(`Remote provisioner HTTP ${remoteRes.status}: ${errDetail || remoteRes.statusText}`);
         }
 
         return new Response(remoteRes.body, {

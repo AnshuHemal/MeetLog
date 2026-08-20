@@ -131,7 +131,12 @@ export function AutoProvisionModal({
       });
 
       if (!response.ok || !response.body) {
-        throw new Error(`Server returned status ${response.status}`);
+        let errDetail = `Server returned status ${response.status}`;
+        try {
+          const errJson = await response.json();
+          if (errJson.error) errDetail = errJson.error;
+        } catch {}
+        throw new Error(errDetail);
       }
 
       const reader = response.body.getReader();
@@ -182,6 +187,7 @@ export function AutoProvisionModal({
               if (onKeysProvisioned) onKeysProvisioned();
             } else if (eventName === "error") {
               setErrorMsg(data.error);
+              setLogs((prev) => [...prev, { line: `[ERROR] ${data.error}`, isError: true, timestamp: new Date().toLocaleTimeString() }]);
               setPhase("completed");
             }
           } catch {
@@ -191,6 +197,7 @@ export function AutoProvisionModal({
     } catch (err: any) {
       if (err.name !== "AbortError") {
         setErrorMsg(err.message || "Failed to provision keys.");
+        setLogs((prev) => [...prev, { line: `[FATAL] ${err.message}`, isError: true, timestamp: new Date().toLocaleTimeString() }]);
         setPhase("completed");
       }
     }
