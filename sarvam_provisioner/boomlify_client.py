@@ -131,6 +131,16 @@ class BoomlifyClient:
         logger.debug(f"Message preview: {body_text[:300]}")
         return None
 
+    def get_verification_code(self, email_id: str) -> Optional[str]:
+        messages = self.get_messages(email_id)
+        if not messages:
+            return None
+        for msg in reversed(messages):
+            otp = self.extract_otp_from_message(msg)
+            if otp:
+                return otp
+        return None
+
     def delete_email(self, email_id: str) -> bool:
         url = f"{self.base_url}/api/v1/emails/{email_id}"
         try:

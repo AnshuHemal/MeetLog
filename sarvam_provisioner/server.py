@@ -112,16 +112,16 @@ async def provision_stream(req: ProvisionRequest, authorization: Optional[str] =
                     "data": json.dumps({"line": "Requesting disposable inbox from Boomlify...", "timestamp": now_str()})
                 }
 
-                email_res = boomlify.create_email(duration="1hour")
-                if not email_res["success"]:
+                try:
+                    email_res = boomlify.create_email(duration="1hour")
+                    email_id = email_res["id"]
+                    email_address = email_res["address"]
+                except Exception as email_err:
                     yield {
                         "event": "log",
-                        "data": json.dumps({"line": f"Boomlify error: {email_res.get('error')}", "isError": True, "timestamp": now_str()})
+                        "data": json.dumps({"line": f"Boomlify inbox creation error: {email_err}", "isError": True, "timestamp": now_str()})
                     }
                     continue
-
-                email_id = email_res["email_id"]
-                email_address = email_res["address"]
 
                 yield {
                     "event": "log",
@@ -316,6 +316,15 @@ async def provision_stream(req: ProvisionRequest, authorization: Optional[str] =
                 })
             }
 
+        except Exception as exc:
+            yield {
+                "event": "log",
+                "data": json.dumps({"line": f"[FATAL ERROR] {exc}", "isError": True, "timestamp": now_str()})
+            }
+            yield {
+                "event": "error",
+                "data": json.dumps({"error": str(exc)})
+            }
         finally:
             await sarvam.stop()
 

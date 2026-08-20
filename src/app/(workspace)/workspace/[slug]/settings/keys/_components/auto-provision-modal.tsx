@@ -148,7 +148,8 @@ export function AutoProvisionModal({
         if (done) break;
 
         buffer += decoder.decode(value, { stream: true });
-        const events = buffer.split("\n\n");
+        const normalized = buffer.replace(/\r\n/g, "\n");
+        const events = normalized.split("\n\n");
         buffer = events.pop() || "";
 
         for (const eventBlock of events) {
@@ -159,10 +160,11 @@ export function AutoProvisionModal({
 
           const lines = eventBlock.split("\n");
           for (const line of lines) {
-            if (line.startsWith("event:")) {
-              eventName = line.replace("event:", "").trim();
-            } else if (line.startsWith("data:")) {
-              dataStr = line.replace("data:", "").trim();
+            const trimmed = line.trim();
+            if (trimmed.startsWith("event:")) {
+              eventName = trimmed.replace("event:", "").trim();
+            } else if (trimmed.startsWith("data:")) {
+              dataStr = trimmed.replace("data:", "").trim();
             }
           }
 
