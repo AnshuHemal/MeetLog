@@ -195,52 +195,66 @@ class SarvamProvisioner:
             if log_cb:
                 await log_cb({"type": "log", "line": msg})
 
-        await self.capture_frame(page, log_cb, "Post-OTP Screen")
-
-        # 1. Complete any initial onboarding choices if visible
+        # 1. Complete onboarding wizard steps until redirected away from /onboarding
         try:
-            await log(f"Checking post-signup onboarding (URL: {page.url})...")
-            await page.wait_for_load_state("domcontentloaded", timeout=10000)
-            await self._human_delay(1500, 2500)
+            for step_i in range(1, 6):
+                if "onboarding" not in page.url and step_i > 1:
+                    break
+                await log(f"Handling onboarding wizard (step {step_i}, URL: {page.url})...")
+                await self.capture_frame(page, log_cb, f"Onboarding Step {step_i}")
 
-            # Role selection
-            for dev_sel in ["button:has-text('Developer')", "[role='button']:has-text('Developer')", "div:has-text('Developer')", "span:has-text('Developer')"]:
-                try:
-                    dev_btn = page.locator(dev_sel).first
-                    if await dev_btn.count() > 0 and await dev_btn.is_visible():
-                        await dev_btn.click()
-                        await log("Selected 'Developer' role.")
-                        await self._human_delay(800, 1500)
-                        await self.capture_frame(page, log_cb, "Selected Developer")
-                        break
-                except Exception:
-                    pass
+                # Check for Developer role
+                dev_clicked = await page.evaluate("""
+                    () => {
+                        for (const el of document.querySelectorAll("button, [role='button'], div, span")) {
+                            if ((el.innerText || "").trim() === "Developer") {
+                                el.click();
+                                return true;
+                            }
+                        }
+                        return false;
+                    }
+                """)
+                if dev_clicked:
+                    await log("Selected 'Developer' role.")
+                    await self._human_delay(800, 1500)
 
-            # Goal selection
-            for api_sel in ["button:has-text('Sarvam API')", "[role='button']:has-text('Sarvam API')", "div:has-text('Sarvam API')", "span:has-text('Sarvam API')"]:
-                try:
-                    api_btn = page.locator(api_sel).first
-                    if await api_btn.count() > 0 and await api_btn.is_visible():
-                        await api_btn.click()
-                        await log("Selected 'Sarvam API' goal.")
-                        await self._human_delay(800, 1500)
-                        await self.capture_frame(page, log_cb, "Selected Sarvam API")
-                        break
-                except Exception:
-                    pass
+                # Check for Sarvam API goal
+                api_clicked = await page.evaluate("""
+                    () => {
+                        for (const el of document.querySelectorAll("button, [role='button'], div, span")) {
+                            if ((el.innerText || "").trim() === "Sarvam API") {
+                                el.click();
+                                return true;
+                            }
+                        }
+                        return false;
+                    }
+                """)
+                if api_clicked:
+                    await log("Selected 'Sarvam API' goal.")
+                    await self._human_delay(800, 1500)
 
-            # Continue button
-            for cont_sel in ["button:has-text('Continue to Sarvam API')", "button:has-text('Continue')", "button:has-text('Get Started')", "button:has-text('Next')"]:
-                try:
-                    continue_btn = page.locator(cont_sel).first
-                    if await continue_btn.count() > 0 and await continue_btn.is_visible():
-                        await continue_btn.click()
-                        await log("Submitted onboarding choices.")
-                        await self._human_delay(2000, 3000)
-                        await self.capture_frame(page, log_cb, "Onboarding Submitted")
+                # Click any Continue / Continue to Sarvam API button
+                cont_clicked = await page.evaluate("""
+                    () => {
+                        for (const el of document.querySelectorAll("button, [role='button']")) {
+                            const txt = (el.innerText || "").trim();
+                            if (txt === "Continue to Sarvam API" || txt === "Continue" || txt === "Get Started" || txt === "Next") {
+                                el.click();
+                                return txt;
+                            }
+                        }
+                        return null;
+                    }
+                """)
+                if cont_clicked:
+                    await log(f"Clicked '{cont_clicked}' button.")
+                    await self._human_delay(2500, 3500)
+                    await self.capture_frame(page, log_cb, f"After '{cont_clicked}'")
+                else:
+                    if step_i > 1:
                         break
-                except Exception:
-                    pass
         except Exception as e:
             logger.warning(f"Onboarding flow check: {e}")
 
