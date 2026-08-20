@@ -1,12 +1,25 @@
 import asyncio
 import json
 import os
+import subprocess
 import datetime
 from typing import AsyncGenerator, Optional
 from fastapi import FastAPI, HTTPException, Header
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 from sse_starlette.sse import EventSourceResponse
+
+if os.name != "nt" and not os.getenv("DISPLAY"):
+    try:
+        subprocess.Popen(
+            ["Xvfb", ":99", "-screen", "0", "1920x1080x24", "-ac"],
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+        )
+        os.environ["DISPLAY"] = ":99"
+        print("[DISPLAY] Started Xvfb virtual display on :99")
+    except Exception as e:
+        print("[DISPLAY] Could not start Xvfb:", e)
 
 from boomlify_client import BoomlifyClient
 from sarvam_signup import SarvamProvisioner
