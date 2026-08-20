@@ -225,6 +225,30 @@ class SarvamProvisioner:
                     pass
 
             await log("Onboarding Step 4: Extracting API key from dialog or page...")
+            try:
+                await page.wait_for_selector(
+                    "button:has-text('Copy'), [aria-label*='copy' i], input[readonly], code, pre",
+                    state="visible",
+                    timeout=8000
+                )
+            except Exception:
+                pass
+
+            copy_btn = page.locator("button:has-text('Copy'), [aria-label*='copy' i], svg[class*='copy' i]").first
+            try:
+                if await copy_btn.count() > 0 and await copy_btn.is_visible():
+                    await log("Clicking modal 'Copy' button...")
+                    await copy_btn.click()
+                    await self._human_delay(500, 1000)
+
+                    clipboard_text = await page.evaluate("navigator.clipboard.readText()")
+                    if clipboard_text and len(clipboard_text.strip()) >= 15:
+                        api_key = clipboard_text.strip()
+                        await log(f"API key extracted via clipboard: {api_key[:8]}...{api_key[-4:]}")
+                        return api_key
+            except Exception as e:
+                logger.warning(f"Copy button / clipboard extraction warning: {e}")
+
             extracted_key = await page.evaluate("""
                 () => {
                     const candidateSelectors = ["input", "textarea", "code", "pre", "span", "p", "div", "td"];
@@ -243,21 +267,6 @@ class SarvamProvisioner:
                 await log(f"API key extracted from modal: {extracted_key[:8]}...{extracted_key[-4:]}")
                 return extracted_key
 
-            copy_btn = page.locator("button:has-text('Copy'), [aria-label*='copy' i], svg[class*='copy' i]").first
-            try:
-                if await copy_btn.count() > 0 and await copy_btn.is_visible():
-                    await log("Clicking modal 'Copy' button...")
-                    await copy_btn.click()
-                    await self._human_delay(500, 1000)
-
-                    clipboard_text = await page.evaluate("navigator.clipboard.readText()")
-                    if clipboard_text and len(clipboard_text.strip()) >= 15:
-                        api_key = clipboard_text.strip()
-                        await log(f"API key extracted via clipboard: {api_key[:8]}...{api_key[-4:]}")
-                        return api_key
-            except Exception as e:
-                logger.warning(f"Copy button / clipboard extraction warning: {e}")
-
             return None
 
         except Exception as e:
@@ -274,12 +283,20 @@ class SarvamProvisioner:
         if api_key:
             return api_key
 
-        for dash_url in ["https://indus.sarvam.ai/developer", "https://dashboard.sarvam.ai/developer", "https://indus.sarvam.ai/api-keys"]:
+        # Try sidebar navigation on the current page before hard page navigation
+        for nav_sel in ["a[href*='api-key']", "a[href*='developer']", "a:has-text('API Keys')", "button:has-text('API Keys')", "a:has-text('Developer')"]:
             try:
-                await log(f"Navigating to developer dashboard ({dash_url})...")
-                await page.goto(dash_url, wait_until="domcontentloaded", timeout=30000)
-                await self._human_delay(2000, 3000)
+                nav_btn = page.locator(nav_sel).first
+                if await nav_btn.count() > 0 and await nav_btn.is_visible():
+                    await log(f"Clicking sidebar navigation ({nav_sel})...")
+                    await nav_btn.click()
+                    await self._human_delay(2000, 3000)
+                    break
+            except Exception:
+                pass
 
+        for dash_url in ["https://dashboard.sarvam.ai/developer", "https://indus.sarvam.ai/developer", "https://indus.sarvam.ai/api-keys", "https://indus.sarvam.ai/"]:
+            try:
                 table_key = await page.evaluate("""
                     () => {
                         for (const el of document.querySelectorAll("input, textarea, code, pre, [class*='key'], td, span")) {
@@ -321,6 +338,16 @@ class SarvamProvisioner:
                                 await confirm_btn.click()
                                 await self._human_delay(2000, 3500)
 
+                        # Try clicking copy button in create modal
+                        modal_copy = page.locator("button:has-text('Copy'), [aria-label*='copy' i], svg[class*='copy' i]").first
+                        if await modal_copy.count() > 0 and await modal_copy.is_visible():
+                            await modal_copy.click()
+                            await self._human_delay(500, 1000)
+                            cb = await page.evaluate("navigator.clipboard.readText()")
+                            if cb and len(cb.strip()) >= 15:
+                                await log(f"API key extracted via modal copy: {cb[:8]}...{cb[-4:]}")
+                                return cb.strip()
+
                         created_key = await page.evaluate("""
                             () => {
                                 for (const el of document.querySelectorAll("input, textarea, code, pre, [class*='key'], span, div")) {
@@ -335,8 +362,12 @@ class SarvamProvisioner:
                         if created_key:
                             await log(f"Newly generated API key extracted: {created_key[:8]}...{created_key[-4:]}")
                             return created_key
+
+                await log(f"Navigating to dashboard URL ({dash_url})...")
+                await page.goto(dash_url, wait_until="domcontentloaded", timeout=25000)
+                await self._human_delay(2000, 3000)
             except Exception as e:
-                logger.warning(f"Failed fallback navigation to {dash_url}: {e}")
+                logger.warning(f"Dashboard navigation warning ({dash_url}): {e}")
 
         await log("Could not extract API key from any dashboard flow.")
         return None
