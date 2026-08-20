@@ -303,52 +303,55 @@ async def provision_stream(req: ProvisionRequest, authorization: Optional[str] =
                             "data": json.dumps({"line": str(item), "timestamp": now_str()})
                         }
 
-                api_key = await key_task
-                if not api_key:
+                raw_keys = await key_task
+                account_keys: list[str] = raw_keys if isinstance(raw_keys, list) else ([raw_keys] if raw_keys else [])
+
+                if not account_keys:
                     yield {
                         "event": "log",
-                        "data": json.dumps({"line": "Failed to extract API key from dashboard.", "isError": True, "timestamp": now_str()})
+                        "data": json.dumps({"line": "Failed to extract API keys from dashboard.", "isError": True, "timestamp": now_str()})
                     }
                     boomlify.delete_email(email_id)
                     if context:
                         await context.close()
                     continue
 
-                created_keys.append(api_key)
-                yield {
-                    "event": "log",
-                    "data": json.dumps({"line": f"Successfully extracted API Key: {api_key[:8]}...{api_key[-4:]}", "timestamp": now_str()})
-                }
-
-                yield {
-                    "event": "step",
-                    "data": json.dumps({
-                        "account": i,
-                        "step": "key_extracted",
-                        "keyPreview": f"{api_key[:8]}...{api_key[-4:]}",
-                        "label": f"API Key Extracted: {api_key[:8]}...{api_key[-4:]}",
-                    })
-                }
-
-                if not dry_run:
-                    db_writer.save_api_key(
-                        api_key=api_key,
-                        email=email_address,
-                        password=Config.SARVAM_DEFAULT_PASSWORD,
-                        label=f"Auto-provisioned #{i}",
-                    )
+                for k_idx, api_key in enumerate(account_keys, 1):
+                    created_keys.append(api_key)
                     yield {
                         "event": "log",
-                        "data": json.dumps({"line": "Saved API key to Neon PostgreSQL database key pool.", "timestamp": now_str()})
+                        "data": json.dumps({"line": f"Extracted API Key {k_idx}/{len(account_keys)}: {api_key[:8]}...{api_key[-4:]}", "timestamp": now_str()})
                     }
+
                     yield {
-                        "event": "key_saved",
+                        "event": "step",
                         "data": json.dumps({
                             "account": i,
-                            "success": True,
-                            "totalCreated": len(created_keys),
+                            "step": "key_extracted",
+                            "keyPreview": f"{api_key[:8]}...{api_key[-4:]}",
+                            "label": f"API Key {k_idx}/{len(account_keys)}: {api_key[:8]}...{api_key[-4:]}",
                         })
                     }
+
+                    if not dry_run:
+                        db_writer.save_api_key(
+                            api_key=api_key,
+                            email=email_address,
+                            password=Config.SARVAM_DEFAULT_PASSWORD,
+                            label=f"Auto #{i} (Key {k_idx}/{len(account_keys)})",
+                        )
+                        yield {
+                            "event": "log",
+                            "data": json.dumps({"line": f"Saved Key {k_idx}/{len(account_keys)} to Neon PostgreSQL database key pool.", "timestamp": now_str()})
+                        }
+                        yield {
+                            "event": "key_saved",
+                            "data": json.dumps({
+                                "account": i,
+                                "success": True,
+                                "totalCreated": len(created_keys),
+                            })
+                        }
 
                 boomlify.delete_email(email_id)
                 if context:

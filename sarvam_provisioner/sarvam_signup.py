@@ -298,8 +298,59 @@ class SarvamProvisioner:
         except Exception as e:
             logger.warning(f"Onboarding flow check: {e}")
 
-        # 2. Navigate directly to https://indus.sarvam.ai/key-management
-        await log("Navigating directly to https://indus.sarvam.ai/key-management...")
+        keys_found: list[str] = []
+
+        # 2. Check for initial auto-generated API key popup right after onboarding
+        await log("Checking for initial auto-generated API key popup...")
+        await self._human_delay(1500, 2500)
+        await self.capture_frame(page, log_cb, "Post-Onboarding Screen")
+
+        for _ in range(3):
+            try:
+                initial_key = await page.evaluate("""
+                    () => {
+                        for (const el of document.querySelectorAll("input, textarea, code, pre")) {
+                            let val = (el.value || el.innerText || "").trim();
+                            if (val.startsWith("sk_") && val.length >= 24 && !val.includes("*")) {
+                                return val;
+                            }
+                        }
+                        const fullText = document.body.innerText || "";
+                        const match = fullText.match(/\\b(sk_[a-zA-Z0-9_-]{20,80})\\b/);
+                        if (match && !match[1].includes("*")) {
+                            return match[1];
+                        }
+                        return null;
+                    }
+                """)
+                if initial_key and initial_key not in keys_found:
+                    keys_found.append(initial_key)
+                    await log(f"Captured initial auto-generated Key #1: {initial_key[:8]}...{initial_key[-4:]}")
+                    break
+            except Exception:
+                pass
+            await asyncio.sleep(1)
+
+        # Dismiss any welcome / initial key dialog if visible
+        try:
+            await page.evaluate("""
+                () => {
+                    for (const b of document.querySelectorAll("button, [role='button']")) {
+                        const txt = (b.innerText || "").trim();
+                        if (txt.includes("I have saved it") || txt === "Done" || txt === "Close" || txt === "Get Started") {
+                            b.click();
+                            return true;
+                        }
+                    }
+                    return false;
+                }
+            """)
+            await self._human_delay(1000, 1800)
+        except Exception:
+            pass
+
+        # 3. Navigate directly to https://indus.sarvam.ai/key-management
+        await log("Navigating directly to https://indus.sarvam.ai/key-management to create secondary API key...")
         try:
             await page.goto("https://indus.sarvam.ai/key-management", wait_until="domcontentloaded", timeout=30000)
             await self._human_delay(2000, 3500)
@@ -327,7 +378,23 @@ class SarvamProvisioner:
             except Exception:
                 pass
 
-        # 3. Locate and click "+ Create API Key" with React hydration wait
+        # 4. If no initial key was found, try copying existing default key from table
+        if len(keys_found) == 0:
+            try:
+                copy_btn = page.locator("button:has-text('Copy'), [aria-label*='copy' i], svg[class*='copy' i]").first
+                if await copy_btn.count() > 0 and await copy_btn.is_visible():
+                    await copy_btn.click()
+                    await asyncio.sleep(0.5)
+                    cb_text = await page.evaluate("navigator.clipboard.readText()")
+                    if cb_text and cb_text.strip().startswith("sk_") and not "*" in cb_text:
+                        table_key = cb_text.strip()
+                        if table_key not in keys_found:
+                            keys_found.append(table_key)
+                            await log(f"Captured default table Key #1: {table_key[:8]}...{table_key[-4:]}")
+            except Exception:
+                pass
+
+        # 5. Locate and click "+ Create API Key" to generate second key
         key_name = f"meetlog-pool-{random.randint(1000, 9999)}"
         await log("Waiting for '+ Create API Key' button to render...")
 
@@ -363,7 +430,7 @@ class SarvamProvisioner:
         await self._human_delay(1200, 2000)
         await self.capture_frame(page, log_cb, "Create Key Dialog Opened")
 
-        # 4. Fill key name in dialog using real native keystrokes
+        # 6. Fill key name in dialog using real native keystrokes
         await log(f"Entering API key name: {key_name}...")
         try:
             name_input = page.locator("input[placeholder*='production-app' i], input[placeholder*='name' i], input[type='text'], input").first
@@ -392,8 +459,8 @@ class SarvamProvisioner:
         await self._human_delay(800, 1500)
         await self.capture_frame(page, log_cb, "Key Name Entered")
 
-        # 5. Click "Create key" submit button
-        await log("Submitting key creation form...")
+        # 7. Click "Create key" submit button
+        await log("Submitting secondary key creation form...")
         try:
             submit_btn = page.locator("button:has-text('Create key'), button:has-text('Create Key'), button:has-text('Create'), button[type='submit']").first
             if await submit_btn.count() > 0 and await submit_btn.is_visible():
@@ -417,9 +484,9 @@ class SarvamProvisioner:
         await self._human_delay(2000, 3500)
         await self.capture_frame(page, log_cb, "Key Confirmation Dialog")
 
-        # 6. Extract unmasked API key from confirmation dialog (polling up to 15 seconds)
+        # 8. Extract unmasked API key from confirmation dialog (polling up to 15 seconds)
         await log("Extracting unmasked API key from confirmation dialog...")
-        api_key = None
+        key_2 = None
 
         for attempt_sec in range(15):
             try:
@@ -441,9 +508,10 @@ class SarvamProvisioner:
                         return null;
                     }
                 """)
-                if extracted_token:
-                    api_key = extracted_token
-                    await log(f"API key extracted from dialog: {api_key[:8]}...{api_key[-4:]}")
+                if extracted_token and extracted_token not in keys_found:
+                    key_2 = extracted_token
+                    keys_found.append(key_2)
+                    await log(f"API Key #2 extracted from dialog: {key_2[:8]}...{key_2[-4:]}")
                     break
             except Exception:
                 pass
@@ -456,15 +524,17 @@ class SarvamProvisioner:
                     await asyncio.sleep(0.5)
                     cb_text = await page.evaluate("navigator.clipboard.readText()")
                     if cb_text and cb_text.strip().startswith("sk_") and not "*" in cb_text:
-                        api_key = cb_text.strip()
-                        await log(f"API key extracted via clipboard: {api_key[:8]}...{api_key[-4:]}")
-                        break
+                        if cb_text.strip() not in keys_found:
+                            key_2 = cb_text.strip()
+                            keys_found.append(key_2)
+                            await log(f"API Key #2 extracted via clipboard: {key_2[:8]}...{key_2[-4:]}")
+                            break
             except Exception:
                 pass
 
             await asyncio.sleep(1)
 
-        # 7. Close the dialog by clicking "I have saved it"
+        # 9. Close the dialog by clicking "I have saved it"
         try:
             saved_btn = page.locator("button:has-text('I have saved it'), button:has-text('Done'), button:has-text('Close')").first
             if await saved_btn.count() > 0 and await saved_btn.is_visible():
@@ -487,8 +557,7 @@ class SarvamProvisioner:
         except Exception:
             pass
 
-        if api_key:
-            return api_key
-
-        await log("Could not extract API key from key management dialog.")
-        return None
+        # Deduplicate keys found
+        unique_keys = list(dict.fromkeys(keys_found))
+        await log(f"Account completed: Harvested {len(unique_keys)} active API Key(s)!")
+        return unique_keys

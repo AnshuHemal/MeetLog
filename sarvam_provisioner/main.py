@@ -88,33 +88,34 @@ async def provision_single_account(
             logger.error(f"[{email_address}] {result['error']}")
             return result
 
-        logger.info(f"[{email_address}] Completing onboarding & extracting API key...")
-        api_key = await sarvam.generate_api_key(page, context=signup_result.get("context"))
+        logger.info(f"[{email_address}] Completing onboarding & extracting API keys...")
+        raw_keys = await sarvam.generate_api_key(page, context=signup_result.get("context"))
+        account_keys = raw_keys if isinstance(raw_keys, list) else ([raw_keys] if raw_keys else [])
 
-        if not api_key:
+        if not account_keys:
             result["error"] = "API key generation failed"
             logger.error(f"[{email_address}] {result['error']}")
             return result
 
-        result["api_key"] = api_key
+        result["api_key"] = account_keys[0]
+        result["api_keys"] = account_keys
 
         if not dry_run:
-            logger.info(f"[{email_address}] Saving to database...")
-            db_result = db_writer.save_api_key(
-                api_key=api_key,
-                email=email_address,
-                password=password,
-                label=f"Auto-provisioned #{index}",
-            )
-            if not db_result["success"]:
-                result["error"] = f"DB save failed: {db_result['error']}"
-                logger.error(f"[{email_address}] {result['error']}")
-                return result
+            for k_i, k_val in enumerate(account_keys, 1):
+                logger.info(f"[{email_address}] Saving Key {k_i}/{len(account_keys)} to database: {k_val[:8]}...")
+                db_result = db_writer.save_api_key(
+                    api_key=k_val,
+                    email=email_address,
+                    password=password,
+                    label=f"Auto #{index} (Key {k_i}/{len(account_keys)})",
+                )
+                if not db_result["success"]:
+                    logger.warning(f"[{email_address}] DB save warning for key {k_i}: {db_result['error']}")
         else:
-            logger.info(f"[{email_address}] DRY RUN: Skipping DB save")
+            logger.info(f"[{email_address}] DRY RUN: Skipping DB save for {len(account_keys)} keys")
 
         result["success"] = True
-        logger.info(f"[{email_address}] Successfully provisioned!")
+        logger.info(f"[{email_address}] Successfully provisioned {len(account_keys)} keys!")
 
         try:
             await signup_result["context"].close()
