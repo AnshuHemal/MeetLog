@@ -28,7 +28,7 @@ class SarvamProvisioner:
         self.playwright = await async_playwright().start()
 
         has_display = bool(os.getenv("DISPLAY"))
-        is_headless = self.headless if has_display else True
+        is_headless = False if has_display else self.headless
 
         self.browser = await self.playwright.chromium.launch(
             headless=is_headless,
@@ -44,7 +44,7 @@ class SarvamProvisioner:
                 "--start-maximized",
             ],
         )
-        logger.info(f"Browser launched (headless={is_headless})")
+        logger.info(f"Browser launched (headless={is_headless}, display={os.getenv('DISPLAY')})")
 
     async def stop(self):
         try:
