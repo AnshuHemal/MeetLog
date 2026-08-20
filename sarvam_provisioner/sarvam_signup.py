@@ -198,64 +198,101 @@ class SarvamProvisioner:
         # 1. Complete onboarding wizard steps until redirected away from /onboarding
         try:
             await log("Handling initial onboarding setup...")
-            for attempt in range(1, 12):
+            for attempt in range(1, 15):
                 curr_url = page.url
-                await log(f"Checking onboarding status (attempt {attempt}/12, URL: {curr_url})...")
+                await log(f"Checking onboarding status (attempt {attempt}/15, URL: {curr_url})...")
                 await self.capture_frame(page, log_cb, f"Onboarding Check {attempt}")
 
                 if "onboarding" not in curr_url and attempt > 3:
                     await log("Successfully exited onboarding wizard!")
                     break
 
-                # Role: Developer
-                dev_clicked = await page.evaluate("""
-                    () => {
-                        for (const el of document.querySelectorAll("button, [role='button'], div, span, p")) {
-                            if ((el.innerText || "").trim() === "Developer") {
-                                el.click();
-                                return true;
-                            }
-                        }
-                        return false;
-                    }
-                """)
-                if dev_clicked:
-                    await log("Selected 'Developer' role.")
-                    await self._human_delay(800, 1500)
+                # Role: Developer (Click card containing "Developer")
+                dev_clicked = False
+                try:
+                    dev_locator = page.locator("text='Developer'").first
+                    if await dev_locator.count() > 0 and await dev_locator.is_visible():
+                        await dev_locator.click()
+                        dev_clicked = True
+                except Exception:
+                    pass
 
-                # Goal: Sarvam API
-                api_clicked = await page.evaluate("""
-                    () => {
-                        for (const el of document.querySelectorAll("button, [role='button'], div, span, p")) {
-                            if ((el.innerText || "").trim() === "Sarvam API") {
-                                el.click();
-                                return true;
+                if not dev_clicked:
+                    dev_clicked = await page.evaluate("""
+                        () => {
+                            for (const el of document.querySelectorAll("div, button, [role='button'], a, li, span, p")) {
+                                const txt = (el.innerText || "").trim();
+                                if (txt.includes("Developer") && !txt.includes("Which role") && !txt.includes("Founder") && !txt.includes("Product") && txt.length < 50) {
+                                    el.click();
+                                    return true;
+                                }
                             }
+                            return false;
                         }
-                        return false;
-                    }
-                """)
+                    """)
+
+                if dev_clicked:
+                    await log("Selected 'Developer' role card.")
+                    await self._human_delay(1000, 1800)
+                    await self.capture_frame(page, log_cb, "Selected Developer")
+
+                # Goal: Sarvam API (Click card containing "Sarvam API")
+                api_clicked = False
+                try:
+                    api_locator = page.locator("text='Sarvam API'").first
+                    if await api_locator.count() > 0 and await api_locator.is_visible():
+                        await api_locator.click()
+                        api_clicked = True
+                except Exception:
+                    pass
+
+                if not api_clicked:
+                    api_clicked = await page.evaluate("""
+                        () => {
+                            for (const el of document.querySelectorAll("div, button, [role='button'], a, li, span, p")) {
+                                const txt = (el.innerText || "").trim();
+                                if (txt.includes("Sarvam API") && !txt.includes("Which role") && !txt.includes("goal") && txt.length < 60) {
+                                    el.click();
+                                    return true;
+                                }
+                            }
+                            return false;
+                        }
+                    """)
+
                 if api_clicked:
-                    await log("Selected 'Sarvam API' goal.")
-                    await self._human_delay(800, 1500)
+                    await log("Selected 'Sarvam API' goal card.")
+                    await self._human_delay(1000, 1800)
+                    await self.capture_frame(page, log_cb, "Selected Sarvam API")
 
                 # Continue / Continue to Sarvam API button
-                cont_text = await page.evaluate("""
-                    () => {
-                        for (const el of document.querySelectorAll("button, [role='button'], a")) {
-                            const txt = (el.innerText || "").trim();
-                            if (txt === "Continue to Sarvam API" || txt === "Continue" || txt === "Get Started" || txt === "Next") {
-                                el.click();
-                                return txt;
+                cont_text = None
+                try:
+                    cont_btn = page.locator("button:has-text('Continue to Sarvam API'), button:has-text('Continue'), button:has-text('Get Started'), button:has-text('Next')").first
+                    if await cont_btn.count() > 0 and await cont_btn.is_visible():
+                        cont_text = await cont_btn.inner_text()
+                        await cont_btn.click()
+                except Exception:
+                    pass
+
+                if not cont_text:
+                    cont_text = await page.evaluate("""
+                        () => {
+                            for (const el of document.querySelectorAll("button, [role='button'], a")) {
+                                const txt = (el.innerText || "").trim();
+                                if (txt === "Continue to Sarvam API" || txt === "Continue" || txt === "Get Started" || txt === "Next") {
+                                    el.click();
+                                    return txt;
+                                }
                             }
+                            return null;
                         }
-                        return null;
-                    }
-                """)
+                    """)
+
                 if cont_text:
-                    await log(f"Clicked onboarding '{cont_text}' button.")
+                    await log(f"Clicked onboarding '{cont_text.strip()}' button.")
                     await self._human_delay(2500, 4000)
-                    await self.capture_frame(page, log_cb, f"After '{cont_text}'")
+                    await self.capture_frame(page, log_cb, f"After '{cont_text.strip()}'")
 
                 await asyncio.sleep(1)
         except Exception as e:
@@ -270,14 +307,14 @@ class SarvamProvisioner:
         except Exception as e:
             await log(f"Navigation warning: {e}")
 
-        # If redirected back to onboarding, click Continue again
+        # If redirected back to onboarding, complete whatever is visible
         if "onboarding" in page.url:
             await log("Detected onboarding redirect, completing final step...")
             await page.evaluate("""
                 () => {
-                    for (const el of document.querySelectorAll("button, [role='button']")) {
+                    for (const el of document.querySelectorAll("div, button, [role='button']")) {
                         const txt = (el.innerText || "").trim();
-                        if (txt.includes("Continue") || txt.includes("Get Started") || txt.includes("Next")) {
+                        if (txt.includes("Developer") || txt.includes("Sarvam API") || txt.includes("Continue")) {
                             el.click();
                         }
                     }
