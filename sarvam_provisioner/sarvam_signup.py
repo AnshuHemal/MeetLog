@@ -302,17 +302,26 @@ class SarvamProvisioner:
                 if await cont_btn.count() > 0 and await cont_btn.is_visible():
                     await cont_btn.click()
                     await log("Submitted onboarding choices.")
-                    await self._human_delay(1200, 2000)
+                    await self._human_delay(1500, 2500)
             except Exception as e:
                 logger.warning(f"Onboarding flow warning: {e}")
 
         keys_found: list[str] = []
 
-        # 2. Capture initial API key from welcome modal ("Here is your first API key to get started")
-        await log("Capturing initial welcome API key...")
-        await self._human_delay(600, 1200)
+        # 2. Wait for initial welcome modal to open ("Here is your first API key to get started")
+        await log("Waiting for initial welcome API key modal...")
+        try:
+            await page.wait_for_selector(
+                "button:has-text('I have saved it'), button:has-text('Copy'), text='Here is your first API key'",
+                state="visible",
+                timeout=12000
+            )
+        except Exception:
+            pass
 
-        # Trigger copy button on welcome modal
+        await self._human_delay(400, 800)
+
+        # Click Copy button on welcome modal
         try:
             copy_btn = page.locator("button:has-text('Copy'), [aria-label*='copy' i], svg[class*='copy' i]").first
             if await copy_btn.count() > 0 and await copy_btn.is_visible():
@@ -321,7 +330,7 @@ class SarvamProvisioner:
         except Exception:
             pass
 
-        # Check extracted keys
+        # Capture Key #1
         for k in await extract_current_keys():
             if k not in keys_found:
                 keys_found.append(k)
@@ -350,15 +359,20 @@ class SarvamProvisioner:
         except Exception:
             pass
 
-        # 3. Navigate directly to https://indus.sarvam.ai/key-management for secondary API key
+        # 3. Navigate directly to https://indus.sarvam.ai/key-management
         await log("Navigating to https://indus.sarvam.ai/key-management...")
         try:
             await page.goto("https://indus.sarvam.ai/key-management", wait_until="domcontentloaded", timeout=20000)
-            await self._human_delay(800, 1500)
+            # Wait for key management page content to render
+            await page.wait_for_selector(
+                "button:has-text('Create API Key'), button:has-text('+ Create API Key'), button:has-text('Create Key')",
+                state="visible",
+                timeout=12000
+            )
         except Exception as e:
-            await log(f"Navigation warning: {e}")
+            await log(f"Page ready check: {e}")
 
-        # 4. If no initial key was found yet, check table copy button
+        # If no initial key was found yet, check table copy button
         if len(keys_found) == 0:
             try:
                 copy_btn = page.locator("button:has-text('Copy'), [aria-label*='copy' i], svg[class*='copy' i]").first
@@ -372,8 +386,9 @@ class SarvamProvisioner:
                     keys_found.append(k)
                     await log(f"Captured table default Key #1: {k[:8]}...{k[-4:]}")
 
-        # 5. Fast Click "+ Create API Key" to generate second key
+        # 4. Click "+ Create API Key" button
         key_name = f"meetlog-pool-{random.randint(1000, 9999)}"
+        await log("Clicking '+ Create API Key' button...")
         try:
             create_btn = page.locator("button:has-text('Create API Key'), button:has-text('+ Create API Key'), button:has-text('Create Key'), [role='button']:has-text('Create')").first
             if await create_btn.count() > 0 and await create_btn.is_visible():
@@ -394,9 +409,7 @@ class SarvamProvisioner:
         except Exception:
             pass
 
-        await self._human_delay(300, 600)
-
-        # 6. Fast Fill name in dialog
+        # 5. Wait for name input in modal and enter name
         await log(f"Entering API key name: {key_name}...")
         try:
             name_input = page.locator("input[placeholder*='production-app' i], input[placeholder*='name' i], input[type='text'], input").first
@@ -422,7 +435,7 @@ class SarvamProvisioner:
 
         await self._human_delay(200, 400)
 
-        # 7. Fast Submit secondary key creation form
+        # 6. Click "Create key" submit button
         await log("Submitting secondary key creation form...")
         try:
             submit_btn = page.locator("button:has-text('Create key'), button:has-text('Create Key'), button:has-text('Create'), button[type='submit']").first
@@ -444,11 +457,18 @@ class SarvamProvisioner:
                 }
             """)
 
-        await self._human_delay(800, 1500)
+        # 7. Wait for the created key modal to appear and extract Key #2
+        await log("Waiting for created API key modal...")
+        try:
+            await page.wait_for_selector(
+                "button:has-text('I have saved it'), button:has-text('Copy')",
+                state="visible",
+                timeout=10000
+            )
+        except Exception:
+            pass
 
-        # 8. Extract unmasked secondary API key
-        await log("Extracting secondary API key...")
-        for _ in range(8):
+        for _ in range(6):
             try:
                 copy_btn = page.locator("button:has-text('Copy'), [aria-label*='copy' i], svg[class*='copy' i]").first
                 if await copy_btn.count() > 0 and await copy_btn.is_visible():
@@ -467,7 +487,7 @@ class SarvamProvisioner:
 
             await asyncio.sleep(0.5)
 
-        # 9. Close the dialog by clicking "I have saved it"
+        # 8. Close the modal by clicking "I have saved it"
         try:
             saved_btn = page.locator("button:has-text('I have saved it'), button:has-text('Done'), button:has-text('Close')").first
             if await saved_btn.count() > 0 and await saved_btn.is_visible():
