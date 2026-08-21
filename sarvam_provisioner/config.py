@@ -22,7 +22,7 @@ class Config:
 
     HEADLESS_MODE: bool = os.getenv("HEADLESS_MODE", "false").lower() == "true"
 
-    EMAIL_DURATION: str = "1hour"
+    EMAIL_DURATION: str = os.getenv("EMAIL_DURATION", "10min")
     EMAIL_POLL_INTERVAL: int = 5
     EMAIL_POLL_MAX_ATTEMPTS: int = 24
 
