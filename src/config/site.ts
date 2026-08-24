@@ -8,7 +8,7 @@ export const siteConfig = {
   shortDescription:
     "Automated meeting transcription, speaker diarization, and AI-generated meeting insights.",
 
-  url: process.env.NEXT_PUBLIC_APP_URL ?? "http://localhost:3000",
+  url: process.env.NEXT_PUBLIC_APP_URL ?? "https://meetlog--web.vercel.app",
 
   ogImage: "/og.png",
 
@@ -31,7 +31,7 @@ export const siteConfig = {
 
   author: {
     name: "MeetLog",
-    url: "http://localhost:3000",
+    url: "https://meetlog--web.vercel.app",
   },
 
   links: {

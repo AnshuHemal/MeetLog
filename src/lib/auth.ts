@@ -17,7 +17,14 @@ function generateOTP(): string {
 
 export const auth = betterAuth({
 
-  baseURL: process.env.BETTER_AUTH_URL ?? process.env.NEXT_PUBLIC_APP_URL,
+  baseURL: process.env.BETTER_AUTH_URL ?? process.env.NEXT_PUBLIC_APP_URL ?? "https://meetlog--web.vercel.app",
+
+  trustedOrigins: [
+    "https://meetlog--web.vercel.app",
+    "http://localhost:3000",
+    ...(process.env.NEXT_PUBLIC_APP_URL ? [process.env.NEXT_PUBLIC_APP_URL] : []),
+    ...(process.env.BETTER_AUTH_URL ? [process.env.BETTER_AUTH_URL] : []),
+  ],
 
   secret: process.env.BETTER_AUTH_SECRET,
 
