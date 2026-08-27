@@ -213,6 +213,61 @@ export async function testPoolKeyAction(workspaceSlug: string, keyId: string) {
       }
     }
 
+    if (record.provider === "GEMINI") {
+      try {
+        const res = await axios.get(
+          `https://generativelanguage.googleapis.com/v1beta/models?key=${record.key}`,
+          {
+            validateStatus: () => true,
+            timeout: 8000,
+          }
+        );
+
+        if (res.status === 200) {
+          await prisma.apiKeyPool.update({
+            where: { id: keyId },
+            data: {
+              status: "ACTIVE",
+              lastError: null,
+              rateLimitResetAt: null,
+            },
+          });
+          return { success: true, status: "ACTIVE", message: "Google Gemini API key validated successfully!" };
+        }
+
+        if (res.status === 400 || res.status === 403 || res.status === 401) {
+          const msg = res.data?.error?.message || "Invalid or deactivated Google Gemini API Key";
+          await prisma.apiKeyPool.update({
+            where: { id: keyId },
+            data: {
+              status: "EXHAUSTED",
+              lastError: msg,
+              errorCount: { increment: 1 },
+            },
+          });
+          return { success: false, status: "EXHAUSTED", error: msg };
+        }
+
+        if (res.status === 429) {
+          const resetAt = new Date(Date.now() + 60000);
+          await prisma.apiKeyPool.update({
+            where: { id: keyId },
+            data: {
+              status: "RATE_LIMITED",
+              rateLimitResetAt: resetAt,
+              lastError: "Gemini rate limit reached (HTTP 429)",
+              errorCount: { increment: 1 },
+            },
+          });
+          return { success: false, status: "RATE_LIMITED", error: "Google Gemini rate limit reached." };
+        }
+
+        return { success: false, error: `Unexpected Google AI status: ${res.status}` };
+      } catch (err: any) {
+        return { success: false, error: err.message || "Failed to connect to Google AI." };
+      }
+    }
+
     return { success: true, status: "ACTIVE", message: `Key is configured for ${record.provider}.` };
   } catch (error: any) {
     return { success: false, error: error.message || "Key validation failed." };

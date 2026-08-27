@@ -30,8 +30,8 @@ export async function GET(req: NextRequest, { params }: RouteParams) {
     }
 
     if (!meeting.sarvamJobId) {
-      await markAsFailed(meetingId, "No SARvam job ID found.");
-      return NextResponse.json({ status: "FAILED", progressMessage: "No SARvam job ID found." });
+      await markAsFailed(meetingId, "No transcription job ID found.");
+      return NextResponse.json({ status: "FAILED", progressMessage: "No transcription job ID found." });
     }
 
     if (processingJobs.has(meetingId)) {
@@ -41,6 +41,24 @@ export async function GET(req: NextRequest, { params }: RouteParams) {
       });
     }
 
+    // 1. If this is a Gemini 3.5 Transcribe job, trigger background processing
+    if (meeting.sarvamJobId.startsWith("gemini_")) {
+      processingJobs.add(meetingId);
+      processCompletedTranscription(meetingId)
+        .catch((err) => {
+          console.error(`[STATUS] Background Gemini processing error for ${meetingId}:`, err.message);
+        })
+        .finally(() => {
+          processingJobs.delete(meetingId);
+        });
+
+      return NextResponse.json({
+        status: "TRANSCRIBING",
+        progressMessage: meeting.progressMessage || "Processing transcription with Google Gemini 3.5..."
+      });
+    }
+
+    // 2. Otherwise query Sarvam AI job status
     let jobDetails;
     try {
       jobDetails = await getSarvamJobStatus(meeting.sarvamJobId);

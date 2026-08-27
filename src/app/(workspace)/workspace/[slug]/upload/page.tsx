@@ -2,7 +2,8 @@
 
 import React, { useState, useRef, useEffect } from "react";
 import { useParams, useRouter } from "next/navigation";
-import { UploadCloud, FileAudio, CheckCircle2, AlertCircle, Loader2, Mic } from "lucide-react";
+import { UploadCloud, FileAudio, CheckCircle2, AlertCircle, Loader2, Mic, Sparkles, Globe, Cpu } from "lucide-react";
+import { motion } from "motion/react";
 
 import { WorkspaceTopbar } from "../_components/workspace-topbar";
 import { Button } from "@/components/ui/button";
@@ -20,6 +21,7 @@ export default function UploadMeetingPage() {
   const slug = params.slug as string;
 
   const [activeTab, setActiveTab] = useState<"upload" | "studio">("upload");
+  const [provider, setProvider] = useState<"GEMINI" | "SARVAM">("GEMINI");
   const [title, setTitle] = useState("");
   const [description, setDescription] = useState("");
   const [numSpeakers, setNumSpeakers] = useState("");
@@ -107,6 +109,7 @@ export default function UploadMeetingPage() {
         durationSeconds: duration || 0,
         languageCode: "unknown",
         numSpeakers: numSpeakers ? parseInt(numSpeakers, 10) : undefined,
+        provider,
       });
 
       setUploadState("success");
@@ -306,12 +309,105 @@ export default function UploadMeetingPage() {
 
             </div>
 
+            {/* ─── AI Transcription Engine Selection ────────────────────────── */}
+            <div className="space-y-3 pt-2">
+              <div className="flex items-center justify-between">
+                <Label className="text-sm font-semibold flex items-center gap-2 text-foreground">
+                  <Cpu className="size-4 text-primary" />
+                  <span>AI Transcription & Diarization Engine</span>
+                </Label>
+                <span className="text-xs text-muted-foreground">Select processing pipeline</span>
+              </div>
+
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-3.5">
+                {/* Option 1: Gemini 3.5 Transcribe (Recommended) */}
+                <motion.div
+                  whileHover={{ scale: isBusy ? 1 : 1.01 }}
+                  whileTap={{ scale: isBusy ? 1 : 0.99 }}
+                  onClick={() => !isBusy && setProvider("GEMINI")}
+                  className={`relative flex flex-col p-4 rounded-xl border-2 transition-all cursor-pointer select-none ${
+                    provider === "GEMINI"
+                      ? "border-primary bg-primary/5 shadow-md shadow-primary/5 dark:shadow-primary/10"
+                      : "border-border/80 bg-card hover:border-primary/40 hover:bg-muted/30"
+                  }`}
+                >
+                  <div className="flex items-start justify-between gap-2">
+                    <div className="flex items-center gap-2.5">
+                      <div className="flex size-8 items-center justify-center rounded-lg bg-primary/10 text-primary">
+                        <Sparkles className="size-4" />
+                      </div>
+                      <div>
+                        <div className="flex items-center gap-1.5">
+                          <h4 className="text-sm font-bold text-foreground">Google Gemini 3.5</h4>
+                          <span className="inline-flex items-center px-2 py-0.5 rounded-full text-[10px] font-extrabold bg-primary/15 text-primary border border-primary/20">
+                            Recommended
+                          </span>
+                        </div>
+                        <p className="text-xs text-muted-foreground mt-0.5">Multimodal Audio Intelligence</p>
+                      </div>
+                    </div>
+                    <div className={`size-4 rounded-full border flex items-center justify-center transition-colors ${
+                      provider === "GEMINI" ? "border-primary bg-primary" : "border-muted-foreground/40"
+                    }`}>
+                      {provider === "GEMINI" && <div className="size-1.5 rounded-full bg-white" />}
+                    </div>
+                  </div>
+
+                  <p className="text-[11px] text-muted-foreground mt-3 leading-relaxed">
+                    High-speed transcription with smart disfluency cleaning (filters filler words), 85+ global languages, and millisecond speaker diarization.
+                  </p>
+                </motion.div>
+
+                {/* Option 2: Sarvam AI */}
+                <motion.div
+                  whileHover={{ scale: isBusy ? 1 : 1.01 }}
+                  whileTap={{ scale: isBusy ? 1 : 0.99 }}
+                  onClick={() => !isBusy && setProvider("SARVAM")}
+                  className={`relative flex flex-col p-4 rounded-xl border-2 transition-all cursor-pointer select-none ${
+                    provider === "SARVAM"
+                      ? "border-primary bg-primary/5 shadow-md shadow-primary/5 dark:shadow-primary/10"
+                      : "border-border/80 bg-card hover:border-primary/40 hover:bg-muted/30"
+                  }`}
+                >
+                  <div className="flex items-start justify-between gap-2">
+                    <div className="flex items-center gap-2.5">
+                      <div className="flex size-8 items-center justify-center rounded-lg bg-orange-500/10 text-orange-600 dark:text-orange-400">
+                        <Globe className="size-4" />
+                      </div>
+                      <div>
+                        <div className="flex items-center gap-1.5">
+                          <h4 className="text-sm font-bold text-foreground">Sarvam AI</h4>
+                          <span className="inline-flex items-center px-2 py-0.5 rounded-full text-[10px] font-extrabold bg-orange-500/15 text-orange-700 dark:text-orange-300 border border-orange-500/20">
+                            Indic Dialects
+                          </span>
+                        </div>
+                        <p className="text-xs text-muted-foreground mt-0.5">Saaras:v3 Speech Engine</p>
+                      </div>
+                    </div>
+                    <div className={`size-4 rounded-full border flex items-center justify-center transition-colors ${
+                      provider === "SARVAM" ? "border-primary bg-primary" : "border-muted-foreground/40"
+                    }`}>
+                      {provider === "SARVAM" && <div className="size-1.5 rounded-full bg-white" />}
+                    </div>
+                  </div>
+
+                  <p className="text-[11px] text-muted-foreground mt-3 leading-relaxed">
+                    Specialized speech-to-text with diarization tailored for Indian vernacular languages and regional accented dialogues.
+                  </p>
+                </motion.div>
+              </div>
+            </div>
+
             {uploadState !== "idle" && (
               <div className="border border-border rounded-lg p-4 bg-muted/40 space-y-2">
                 <div className="flex items-center justify-between text-sm">
                   <span className="font-medium text-foreground">
                     {uploadState === "uploading" && "Uploading file to cloud..."}
-                    {uploadState === "submitting" && "Submitting transcription job..."}
+                    {uploadState === "submitting" && (
+                      provider === "GEMINI"
+                        ? "Transcribing with Google Gemini 3.5..."
+                        : "Submitting transcription job to Sarvam AI..."
+                    )}
                     {uploadState === "success" && "Meeting registered successfully!"}
                     {uploadState === "error" && "An error occurred"}
                   </span>
@@ -329,7 +425,11 @@ export default function UploadMeetingPage() {
                 {uploadState === "submitting" && (
                   <div className="flex items-center text-sm text-muted-foreground gap-2">
                     <Loader2 className="size-4 animate-spin text-primary" />
-                    <span>Communicating with Sarvam AI... Please do not close this window.</span>
+                    <span>
+                      {provider === "GEMINI"
+                        ? "Streaming audio to Google AI Studio & extracting diarized speech..."
+                        : "Communicating with Sarvam AI cluster... Please do not close this window."}
+                    </span>
                   </div>
                 )}
 

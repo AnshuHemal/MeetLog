@@ -7,6 +7,11 @@ import {
   parseMultiPartSarvamJob,
   SarvamTranscriptSegment,
 } from "@/lib/sarvam";
+import {
+  getStoredGeminiEntries,
+  clearStoredGeminiEntries,
+  startGeminiTranscriptionJob,
+} from "@/lib/gemini-transcribe";
 import { generateMeetingInsights, generateMeetingChapters } from "@/lib/gemini";
 import { collectUniqueSpeakerIds, normalizeSpeakerId } from "@/lib/speaker-id";
 import { notifyMeetingFailed } from "@/lib/dead-letter";
@@ -58,8 +63,8 @@ export async function processCompletedTranscription(meetingId: string) {
   }
 
   if (!meeting.sarvamJobId) {
-    log(`Meeting ${meetingId} has no sarvamJobId. Marking as FAILED.`);
-    await markAsFailed(meetingId, "No Sarvam job ID found for this meeting.");
+    log(`Meeting ${meetingId} has no transcription jobId. Marking as FAILED.`);
+    await markAsFailed(meetingId, "No transcription job ID found for this meeting.");
     return;
   }
 
@@ -67,8 +72,40 @@ export async function processCompletedTranscription(meetingId: string) {
     await updateProgressMessage(meetingId, "Initializing transcription processing pipeline...");
     const combinedEntries: SarvamTranscriptSegment[] = [];
 
-    // Handle Multi-Part (>2 Hours) Jobs
-    if (isMultiPartSarvamJob(meeting.sarvamJobId)) {
+    // 1. Handle Gemini 3.5 Transcribe Jobs
+    if (meeting.sarvamJobId.startsWith("gemini_")) {
+      await updateProgressMessage(meetingId, "Processing Gemini 3.5 Transcribe diarized speech...");
+      let geminiEntries = getStoredGeminiEntries(meeting.sarvamJobId);
+
+      if (!geminiEntries || geminiEntries.length === 0) {
+        log(`No in-memory Gemini entries found for ${meeting.sarvamJobId}. Running Gemini 3.5 Transcribe pipeline...`);
+        await updateProgressMessage(meetingId, "Transcribing with Google Gemini 3.5 audio intelligence...");
+        const { jobId } = await startGeminiTranscriptionJob(
+          meeting.id,
+          meeting.audioUrl,
+          meeting.languageCode,
+          meeting.numSpeakers ?? undefined
+        );
+        geminiEntries = getStoredGeminiEntries(jobId);
+      }
+
+      if (!geminiEntries || geminiEntries.length === 0) {
+        throw new Error("Gemini 3.5 Transcribe produced no transcription entries.");
+      }
+
+      for (const entry of geminiEntries) {
+        combinedEntries.push({
+          speaker_id: normalizeSpeakerId(entry.speaker_id || "Speaker 1"),
+          start_time_seconds: Math.round(entry.start_time_seconds * 100) / 100,
+          end_time_seconds: Math.round(entry.end_time_seconds * 100) / 100,
+          transcript: entry.transcript,
+        });
+      }
+
+      clearStoredGeminiEntries(meeting.sarvamJobId);
+
+    // 2. Handle Multi-Part (>2 Hours) Sarvam Jobs
+    } else if (isMultiPartSarvamJob(meeting.sarvamJobId)) {
       const multiPart = parseMultiPartSarvamJob(meeting.sarvamJobId)!;
       log(`Meeting has ${multiPart.parts.length} sliced sub-parts. Processing each in sequence...`);
 

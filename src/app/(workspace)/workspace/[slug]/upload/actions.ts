@@ -3,6 +3,7 @@
 import { revalidatePath } from "next/cache";
 import { prisma } from "@/lib/prisma";
 import { startSarvamTranscriptionJob } from "@/lib/sarvam";
+import { startGeminiTranscriptionJob } from "@/lib/gemini-transcribe";
 
 export async function createMeetingAction(payload: {
   workspaceSlug: string;
@@ -12,6 +13,7 @@ export async function createMeetingAction(payload: {
   durationSeconds: number;
   languageCode: string;
   numSpeakers?: number;
+  provider?: "GEMINI" | "SARVAM";
 }) {
   const workspace = await prisma.workspace.findUnique({
     where: { slug: payload.workspaceSlug },
@@ -25,6 +27,8 @@ export async function createMeetingAction(payload: {
   if (!audioUrl) {
     throw new Error("Audio URL is missing. The file upload may have failed — please try again.");
   }
+
+  const selectedProvider = payload.provider || "GEMINI";
 
   const meeting = await prisma.meeting.create({
     data: {
@@ -40,25 +44,44 @@ export async function createMeetingAction(payload: {
   });
 
   try {
-    const sarvamJobId = await startSarvamTranscriptionJob(
-      audioUrl,
-      payload.languageCode,
-      payload.numSpeakers
-    );
+    let transcriptionJobId: string;
+
+    if (selectedProvider === "GEMINI") {
+      const { jobId } = await startGeminiTranscriptionJob(
+        meeting.id,
+        audioUrl,
+        payload.languageCode,
+        payload.numSpeakers
+      );
+      transcriptionJobId = jobId;
+    } else {
+      transcriptionJobId = await startSarvamTranscriptionJob(
+        audioUrl,
+        payload.languageCode,
+        payload.numSpeakers
+      );
+    }
 
     await prisma.meeting.update({
       where: { id: meeting.id },
       data: {
         status: "TRANSCRIBING",
-        sarvamJobId,
+        sarvamJobId: transcriptionJobId,
       },
     });
   } catch (error: any) {
-    console.error("Failed to start Sarvam job for meeting:", meeting.id, error);
+    console.error(`Failed to start ${selectedProvider} job for meeting:`, meeting.id, error);
 
-    const friendlyError = error.message.includes("No active Sarvam API keys") || error.message.includes("No credits available") || error.message.includes("402")
-      ? "All Sarvam API keys are currently out of credits. Please add fresh keys in Settings > API Key Pool."
-      : error.message;
+    let friendlyError = error.message;
+    if (selectedProvider === "SARVAM") {
+      if (error.message.includes("No active Sarvam API keys") || error.message.includes("No credits available") || error.message.includes("402")) {
+        friendlyError = "All Sarvam API keys are currently out of credits. Please add fresh keys in Settings > API Key Pool.";
+      }
+    } else if (selectedProvider === "GEMINI") {
+      if (error.message.includes("No active Gemini API keys") || error.message.includes("429") || error.message.includes("quota")) {
+        friendlyError = "Gemini API rate limit or quota exceeded. Please check your Gemini API key in Settings > API Key Pool.";
+      }
+    }
 
     await prisma.meeting.update({
       where: { id: meeting.id },
