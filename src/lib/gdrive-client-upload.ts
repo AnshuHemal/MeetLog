@@ -9,6 +9,17 @@ export interface DriveUploadResult {
   provider: "gdrive";
 }
 
+export class DriveAuthRequiredError extends Error {
+  requiresAuth: boolean;
+  authUrl: string;
+  constructor(message: string, authUrl: string = "/api/auth/gdrive/auth") {
+    super(message);
+    this.name = "DriveAuthRequiredError";
+    this.requiresAuth = true;
+    this.authUrl = authUrl;
+  }
+}
+
 export async function uploadAudioToGoogleDrive(
   file: File,
   onProgress?: (percent: number) => void
@@ -29,22 +40,29 @@ export async function uploadAudioToGoogleDrive(
 
     if (!sessionRes.ok) {
       const errJson = await sessionRes.json().catch(() => ({}));
+      if (errJson.requiresAuth) {
+        throw new DriveAuthRequiredError(
+          errJson.error || "Google Drive authorization is required. Click below to authorize with 1-click.",
+          errJson.authUrl || "/api/auth/gdrive/auth"
+        );
+      }
       throw new Error(errJson.error || `Session initialization failed (HTTP ${sessionRes.status}).`);
     }
 
     sessionData = await sessionRes.json();
   } catch (initErr: any) {
+    if (initErr instanceof DriveAuthRequiredError || initErr.requiresAuth) {
+      throw initErr;
+    }
     console.error("[GDRIVE SESSION INIT ERROR]", initErr);
     throw new Error(
-      `Google Drive upload initialization failed: ${initErr.message}. For files (${fileSizeMb}MB), please ensure Google Drive OAuth is authorized. Run 'npm run gdrive:token' in terminal to refresh credentials.`
+      initErr.message || `Google Drive upload initialization failed (${fileSizeMb}MB).`
     );
   }
 
   if (!sessionData.isDriveConfigured || !sessionData.uploadUrl) {
-    const driveError = sessionData.error || sessionData.message || "Google Drive is not authenticated.";
-    throw new Error(
-      `Google Drive authorization required for upload (${fileSizeMb}MB): ${driveError}\n\nPlease run 'npm run gdrive:token' in your project terminal to generate a fresh Google Drive refresh token.`
-    );
+    const driveError = sessionData.error || sessionData.message || "Google Drive authorization required.";
+    throw new DriveAuthRequiredError(driveError, sessionData.authUrl || "/api/auth/gdrive/auth");
   }
 
   const uploadUrl = sessionData.uploadUrl;

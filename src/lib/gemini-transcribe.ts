@@ -33,35 +33,29 @@ export interface GeminiMultiPartJobPayload {
  */
 async function downloadAudioBuffer(audioUrl: string): Promise<Buffer> {
   console.log(`[GEMINI TRANSCRIPTION] Downloading audio from ${audioUrl.slice(0, 45)}...`);
-  
-  if (audioUrl.includes("drive.google.com/uc?id=") || audioUrl.includes("drive.google.com/file/d/")) {
-    try {
-      const match = audioUrl.match(/id=([a-zA-Z0-9_-]+)/) || audioUrl.match(/\/d\/([a-zA-Z0-9_-]+)/);
-      if (match && match[1]) {
-        const fileId = match[1];
-        console.log(`[GDRIVE] Downloading file ${fileId} from Google Drive Alt Media endpoint...`);
-        const gdriveRes = await axios.get(
-          `https://www.googleapis.com/drive/v3/files/${fileId}?alt=media`,
-          {
-            headers: {
-              ...(process.env.GOOGLE_ACCESS_TOKEN ? { Authorization: `Bearer ${process.env.GOOGLE_ACCESS_TOKEN}` } : {}),
-            },
-            responseType: "arraybuffer",
-            timeout: 120000,
-          }
-        );
-        return Buffer.from(gdriveRes.data);
-      }
-    } catch (gdriveErr: any) {
-      console.warn(`[GDRIVE] Alt media download failed, falling back to direct stream:`, gdriveErr.message);
+
+  if (audioUrl.includes("drive.google.com")) {
+    const { downloadGoogleDriveFile } = await import("./gdrive");
+    const buffer = await downloadGoogleDriveFile(audioUrl);
+    // Sanity check to ensure Google Drive didn't return an HTML error page
+    const sample = buffer.subarray(0, 64).toString("utf8").toLowerCase();
+    if (sample.includes("<!doctype html") || sample.includes("<html")) {
+      throw new Error("Google Drive download returned an HTML error page. Please re-authorize Google Drive in Integrations.");
     }
+    return buffer;
   }
 
   const res = await axios.get(audioUrl, {
     responseType: "arraybuffer",
     timeout: 120000,
   });
-  return Buffer.from(res.data);
+
+  const buffer = Buffer.from(res.data);
+  const sample = buffer.subarray(0, 64).toString("utf8").toLowerCase();
+  if (sample.includes("<!doctype html") || sample.includes("<html")) {
+    throw new Error("Audio download returned an HTML error page instead of media content.");
+  }
+  return buffer;
 }
 
 /**
@@ -91,41 +85,31 @@ async function uploadAudioToGoogleAI(
         "X-Goog-Upload-Header-Content-Type": mimeType,
         "Content-Type": "application/json",
       },
-      validateStatus: () => true,
     }
   );
 
-  if (initRes.status >= 400) {
-    throw new Error(`Google AI File Upload init failed (${initRes.status}): ${JSON.stringify(initRes.data)}`);
-  }
-
   const uploadUrl = initRes.headers["x-goog-upload-url"];
   if (!uploadUrl) {
-    throw new Error("Missing X-Goog-Upload-URL in Google AI File Upload response.");
+    throw new Error("Google AI Files API did not return an upload URL.");
   }
 
-  console.log(`[GOOGLE AI FILES] Uploading binary payload...`);
-  const uploadRes = await axios.put(uploadUrl, audioBuffer, {
+  console.log(`[GOOGLE AI FILES] Streaming audio bytes to upload endpoint...`);
+  const uploadRes = await axios.post(uploadUrl, audioBuffer, {
     headers: {
+      "Content-Length": audioBuffer.length.toString(),
       "X-Goog-Upload-Offset": "0",
       "X-Goog-Upload-Command": "upload, finalize",
       "Content-Type": mimeType,
     },
-    maxBodyLength: Infinity,
-    maxContentLength: Infinity,
-    validateStatus: () => true,
+    timeout: 120000,
   });
 
-  if (uploadRes.status >= 400) {
-    throw new Error(`Google AI File binary upload failed (${uploadRes.status}): ${JSON.stringify(uploadRes.data)}`);
-  }
-
   const fileData = uploadRes.data?.file;
-  if (!fileData?.uri || !fileData?.name) {
-    throw new Error(`Invalid file upload response from Google AI: ${JSON.stringify(uploadRes.data)}`);
+  if (!fileData || !fileData.uri) {
+    throw new Error("Failed to get uploaded file URI from Google AI Files API.");
   }
 
-  console.log(`[GOOGLE AI FILES] File successfully uploaded: ${fileData.name} (${fileData.uri})`);
+  console.log(`[GOOGLE AI FILES] Upload complete! File URI: ${fileData.uri}`);
   return {
     fileUri: fileData.uri,
     fileResourceName: fileData.name,
@@ -133,15 +117,16 @@ async function uploadAudioToGoogleAI(
 }
 
 /**
- * Deletes temporary audio file from Google AI storage
+ * Deletes an audio file from Google AI Files after processing
  */
 async function deleteGoogleAIFile(fileResourceName: string, apiKey: string): Promise<void> {
   try {
-    const deleteUrl = `https://generativelanguage.googleapis.com/v1beta/${fileResourceName}?key=${apiKey}`;
-    await axios.delete(deleteUrl, { validateStatus: () => true });
-    console.log(`[GOOGLE AI FILES] Cleaned up temporary file: ${fileResourceName}`);
+    const name = fileResourceName.startsWith("files/") ? fileResourceName : `files/${fileResourceName}`;
+    const deleteUrl = `https://generativelanguage.googleapis.com/v1beta/${name}?key=${apiKey}`;
+    await axios.delete(deleteUrl);
+    console.log(`[GOOGLE AI FILES] Cleaned up temporary file ${name}`);
   } catch (err: any) {
-    console.warn(`[GOOGLE AI FILES] Failed to cleanup file ${fileResourceName}:`, err.message);
+    console.warn(`[GOOGLE AI FILES] Failed to delete file ${fileResourceName}:`, err.message);
   }
 }
 
@@ -200,7 +185,7 @@ Response Schema:
   ]
 }`;
 
-    // Try dedicated gemini-3.5-transcribe first, fallback to gemini-3.5-flash
+    // Try dedicated gemini-3.5-transcribe first, fallback to gemini-3.5-flash / gemini-2.5-flash
     const modelsToTry = ["gemini-3.5-transcribe", "gemini-3.5-flash", "gemini-2.5-flash"];
     let transcriptionData: GeminiTranscriptionResult | null = null;
     let lastModelError: any = null;
@@ -302,7 +287,7 @@ export async function startGeminiTranscriptionJob(
   const audioBuffer = await downloadAudioBuffer(audioUrl);
   const slices = await sliceAudioBuffer(audioBuffer);
 
-  console.log(`[GEMINI 3.5] Audio sliced into ${slices.length} part(s). Processing in parallel...`);
+  console.log(`[GEMINI 3.5] Audio processed into ${slices.length} part(s). Processing in parallel...`);
 
   await prisma.meeting.update({
     where: { id: meetingId },
@@ -349,8 +334,6 @@ export async function startGeminiTranscriptionJob(
 
   const jobId = `gemini_${meetingId}_${Date.now()}`;
 
-  // Temporarily store the parsed transcription entries in meeting progress or database
-  // and trigger immediate processor execution
   (globalThis as any)[`gemini_transcription_${jobId}`] = allEntries;
 
   return { jobId };

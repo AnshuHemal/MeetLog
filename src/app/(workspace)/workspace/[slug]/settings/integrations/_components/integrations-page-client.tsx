@@ -1,10 +1,19 @@
 "use client";
 
-import React, { useState, useTransition } from "react";
+import React, { useState, useEffect, useTransition } from "react";
 import { motion, AnimatePresence } from "motion/react";
 import {
-  Plug, Check, Trash2, Loader2, ExternalLink, ChevronDown, ChevronUp,
-  AlertCircle, CheckCircle2,
+  Plug,
+  Check,
+  Trash2,
+  Loader2,
+  ExternalLink,
+  ChevronDown,
+  ChevronUp,
+  AlertCircle,
+  CheckCircle2,
+  HardDrive,
+  RefreshCw,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -97,13 +106,12 @@ function IntegrationCard({
       animate={{ opacity: 1, y: 0 }}
       className="relative border border-border rounded-xl bg-card overflow-hidden"
     >
-      {}
       <AnimatePresence>
         {toast && (
           <motion.div
-            initial={{ opacity: 0, y: -8 }}
+            initial={{ opacity: 0, y: -6 }}
             animate={{ opacity: 1, y: 0 }}
-            exit={{ opacity: 0, y: -8 }}
+            exit={{ opacity: 0, y: -6 }}
             className={`absolute top-3 right-3 z-10 flex items-center gap-2 text-xs font-semibold px-3 py-1.5 rounded-lg border shadow-sm ${
               toast.type === "success"
                 ? "bg-emerald-500/10 border-emerald-500/30 text-emerald-700 dark:text-emerald-400"
@@ -116,9 +124,7 @@ function IntegrationCard({
         )}
       </AnimatePresence>
 
-      {}
       <div className="flex items-center gap-4 p-4">
-        {}
         <div className="size-11 rounded-xl border border-border bg-muted/40 flex items-center justify-center shrink-0 text-xl">
           {logo}
         </div>
@@ -160,7 +166,6 @@ function IntegrationCard({
         </div>
       </div>
 
-      {}
       <AnimatePresence>
         {isOpen && (
           <motion.div
@@ -208,6 +213,124 @@ function IntegrationCard({
           </motion.div>
         )}
       </AnimatePresence>
+    </motion.div>
+  );
+}
+
+function GoogleDriveIntegrationCard() {
+  const [status, setStatus] = useState<"loading" | "connected" | "disconnected">("loading");
+  const [email, setEmail] = useState<string | null>(null);
+  const [isAuthorizing, setIsAuthorizing] = useState(false);
+
+  const fetchStatus = () => {
+    setStatus("loading");
+    fetch("/api/auth/gdrive/status")
+      .then((r) => r.json())
+      .then((d) => {
+        if (d.isAuthorized) {
+          setStatus("connected");
+          setEmail(d.email || "Connected");
+        } else {
+          setStatus("disconnected");
+          setEmail(null);
+        }
+      })
+      .catch(() => {
+        setStatus("disconnected");
+      });
+  };
+
+  useEffect(() => {
+    fetchStatus();
+
+    const handleMsg = (e: MessageEvent) => {
+      if (e.data?.type === "GDRIVE_AUTH_SUCCESS") {
+        setStatus("connected");
+        setEmail(e.data.email || "Connected");
+        setIsAuthorizing(false);
+      }
+    };
+
+    window.addEventListener("message", handleMsg);
+    return () => window.removeEventListener("message", handleMsg);
+  }, []);
+
+  const handleConnect = () => {
+    setIsAuthorizing(true);
+    const width = 560;
+    const height = 680;
+    const left = window.screenX + (window.outerWidth - width) / 2;
+    const top = window.screenY + (window.outerHeight - height) / 2;
+
+    const popup = window.open(
+      "/api/auth/gdrive/auth",
+      "gdrive_auth_popup",
+      `width=${width},height=${height},left=${left},top=${top},status=no,toolbar=no,menubar=no,location=no`
+    );
+
+    const timer = setInterval(() => {
+      if (!popup || popup.closed) {
+        clearInterval(timer);
+        setIsAuthorizing(false);
+        fetchStatus();
+      }
+    }, 1000);
+  };
+
+  return (
+    <motion.div
+      layout
+      initial={{ opacity: 0, y: 12 }}
+      animate={{ opacity: 1, y: 0 }}
+      className="relative border border-border rounded-xl bg-card overflow-hidden"
+    >
+      <div className="flex items-center gap-4 p-4">
+        <div className="size-11 rounded-xl border border-blue-500/20 bg-blue-500/10 text-blue-600 dark:text-blue-400 flex items-center justify-center shrink-0 text-xl font-bold">
+          <HardDrive className="size-5" />
+        </div>
+
+        <div className="flex-1 min-w-0">
+          <div className="flex items-center gap-2">
+            <h3 className="text-sm font-bold text-foreground">Google Drive Cloud Storage</h3>
+            {status === "connected" && (
+              <span className="inline-flex items-center gap-1 text-[10px] font-bold uppercase tracking-wider bg-emerald-500/10 text-emerald-700 dark:text-emerald-400 border border-emerald-500/20 px-2 py-0.5 rounded-full">
+                <Check className="size-2.5" /> Connected
+              </span>
+            )}
+            {status === "disconnected" && (
+              <span className="inline-flex items-center gap-1 text-[10px] font-bold uppercase tracking-wider bg-amber-500/10 text-amber-700 dark:text-amber-400 border border-amber-500/20 px-2 py-0.5 rounded-full">
+                Authorization Required
+              </span>
+            )}
+          </div>
+          <p className="text-xs text-muted-foreground mt-0.5 truncate">
+            {status === "connected" && email ? `Active account: ${email}` : "Automatic resumable audio storage for meeting recordings up to 2GB."}
+          </p>
+        </div>
+
+        <div className="flex items-center gap-2 shrink-0">
+          <Button
+            variant="outline"
+            size="sm"
+            onClick={fetchStatus}
+            disabled={status === "loading"}
+            className="size-8 p-0"
+            title="Refresh connection status"
+          >
+            <RefreshCw className={`size-3.5 ${status === "loading" ? "animate-spin" : ""}`} />
+          </Button>
+
+          <Button
+            size="sm"
+            className="h-8 text-xs gap-1.5 bg-blue-600 hover:bg-blue-700 text-white font-bold"
+            onClick={handleConnect}
+            disabled={isAuthorizing}
+          >
+            {isAuthorizing ? <Loader2 className="size-3.5 animate-spin" /> : <ExternalLink className="size-3.5" />}
+            {status === "connected" ? "Re-authorize (1-Click)" : "Connect with 1-Click"}
+          </Button>
+        </div>
+      </div>
     </motion.div>
   );
 }
@@ -301,21 +424,26 @@ export function IntegrationsPageClient({ workspaceSlug, integrations }: Integrat
   return (
     <div className="flex-1 overflow-y-auto">
       <div className="max-w-2xl mx-auto px-6 py-8 space-y-6">
-        {}
         <div className="space-y-1">
           <div className="flex items-center gap-2.5">
             <div className="size-8 rounded-lg bg-primary/10 flex items-center justify-center">
               <Plug className="size-4 text-primary" />
             </div>
-            <h1 className="text-lg font-bold text-foreground">Integrations</h1>
+            <h1 className="text-lg font-bold text-foreground">Integrations & Cloud Storage</h1>
           </div>
           <p className="text-sm text-muted-foreground ml-[42px]">
-            Connect your workspace to external tools and export meeting insights automatically.
+            Connect your workspace to cloud storage providers and project management tools.
           </p>
         </div>
 
         {}
         <div className="space-y-3">
+          <h2 className="text-xs font-bold uppercase tracking-wider text-muted-foreground px-1">Storage Provider</h2>
+          <GoogleDriveIntegrationCard />
+        </div>
+
+        <div className="space-y-3 pt-2">
+          <h2 className="text-xs font-bold uppercase tracking-wider text-muted-foreground px-1">Project Management Sync</h2>
           {INTEGRATION_CONFIGS.map((config) => (
             <IntegrationCard
               key={config.type}
@@ -326,7 +454,6 @@ export function IntegrationsPageClient({ workspaceSlug, integrations }: Integrat
           ))}
         </div>
 
-        {}
         <p className="text-xs text-muted-foreground text-center pb-4">
           All credentials are stored encrypted and are only accessible within your workspace.
         </p>

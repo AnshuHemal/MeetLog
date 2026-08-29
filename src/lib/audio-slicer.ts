@@ -60,7 +60,6 @@ export const CHUNK_DURATION_SECONDS = 5400;
 export async function getAudioDuration(filePath: string): Promise<number> {
   const ffmpegPath = getFfmpegPath();
   try {
-    // ffmpeg outputs file info to stderr when invoked with just -i
     const { stderr } = await execFileAsync(ffmpegPath, ["-i", filePath]).catch((err) => ({
       stderr: err.stderr || err.message || "",
       stdout: "",
@@ -108,29 +107,44 @@ export async function sliceAudioBuffer(
       `[AUDIO SLICER] Input audio size: ${Math.round(audioBuffer.byteLength / (1024 * 1024))}MB, Duration: ${durationSeconds}s (~${Math.round(durationSeconds / 60)} mins)`
     );
 
-    // If audio is within single job limit, return as single slice
-    if (durationSeconds <= MAX_SAFE_SARVAM_DURATION && durationSeconds > 0) {
+    // If audio is within single job limit (<= 7000s) or duration is 0 for normal file sizes (< 100MB), return single slice
+    if (
+      (durationSeconds > 0 && durationSeconds <= MAX_SAFE_SARVAM_DURATION) ||
+      (durationSeconds <= 0 && audioBuffer.byteLength <= 100 * 1024 * 1024)
+    ) {
       return [
         {
           buffer: audioBuffer,
           partIndex: 1,
           totalParts: 1,
           startOffsetSeconds: 0,
-          durationSeconds,
+          durationSeconds: durationSeconds > 0 ? durationSeconds : 0,
           fileName: `part_1_${originalFileName}`,
         },
       ];
     }
 
-    // If duration probing returned 0 or failed, fallback to size estimation
-    // 2 hours of typical mp3 (128kbps) is ~115MB
+    // Only split if duration is genuinely > 7000s or size exceeds 100MB
     const totalParts =
       durationSeconds > 0
         ? Math.ceil(durationSeconds / CHUNK_DURATION_SECONDS)
-        : Math.max(2, Math.ceil(audioBuffer.byteLength / (100 * 1024 * 1024)));
+        : Math.max(1, Math.ceil(audioBuffer.byteLength / (100 * 1024 * 1024)));
+
+    if (totalParts <= 1) {
+      return [
+        {
+          buffer: audioBuffer,
+          partIndex: 1,
+          totalParts: 1,
+          startOffsetSeconds: 0,
+          durationSeconds: durationSeconds > 0 ? durationSeconds : 0,
+          fileName: `part_1_${originalFileName}`,
+        },
+      ];
+    }
 
     console.log(
-      `[AUDIO SLICER] Audio duration (${durationSeconds}s) exceeds 2 hours limit. Splitting into ${totalParts} sub-parts (${CHUNK_DURATION_SECONDS / 60} mins each)...`
+      `[AUDIO SLICER] Audio duration (${durationSeconds}s) exceeds threshold. Splitting into ${totalParts} sub-parts (${CHUNK_DURATION_SECONDS / 60} mins each)...`
     );
 
     const ffmpegPath = getFfmpegPath();
@@ -172,7 +186,7 @@ export async function sliceAudioBuffer(
           `[AUDIO SLICER] Stream copy failed for Part ${partNumber}, falling back to fast transcoding:`,
           streamCopyErr.message
         );
-        // Fallback to fast mp3 transcode if stream copy boundary fails
+        // Fallback to fast mp3 transcode with explicit audio parameters
         await execFileAsync(ffmpegPath, [
           "-ss",
           String(startOffset),
@@ -184,6 +198,10 @@ export async function sliceAudioBuffer(
           "libmp3lame",
           "-b:a",
           "128k",
+          "-ar",
+          "44100",
+          "-ac",
+          "2",
           "-y",
           outputFilePath,
         ]);

@@ -2,8 +2,20 @@
 
 import React, { useState, useRef, useEffect } from "react";
 import { useParams, useRouter } from "next/navigation";
-import { UploadCloud, FileAudio, CheckCircle2, AlertCircle, Loader2, Mic, Sparkles, Globe, Cpu } from "lucide-react";
-import { motion } from "motion/react";
+import {
+  UploadCloud,
+  FileAudio,
+  CheckCircle2,
+  AlertCircle,
+  Loader2,
+  Mic,
+  Sparkles,
+  Globe,
+  Cpu,
+  KeyRound,
+  ExternalLink,
+} from "lucide-react";
+import { motion, AnimatePresence } from "motion/react";
 
 import { WorkspaceTopbar } from "../_components/workspace-topbar";
 import { Button } from "@/components/ui/button";
@@ -12,7 +24,7 @@ import { Textarea } from "@/components/ui/textarea";
 import { Label } from "@/components/ui/label";
 import { createMeetingAction } from "./actions";
 import { FadeIn } from "@/components/motion/fade-in";
-import { uploadAudioToGoogleDrive } from "@/lib/gdrive-client-upload";
+import { uploadAudioToGoogleDrive, DriveAuthRequiredError } from "@/lib/gdrive-client-upload";
 import { AudioStudioRecorder } from "@/components/shared/audio-studio-recorder";
 
 export default function UploadMeetingPage() {
@@ -32,9 +44,55 @@ export default function UploadMeetingPage() {
   const [isHydrated, setIsHydrated] = useState(false);
   const fileInputRef = useRef<HTMLInputElement>(null);
 
+  // In-app Google Drive OAuth state
+  const [isGdriveAuthRequired, setIsGdriveAuthRequired] = useState(false);
+  const [isAuthorizingGdrive, setIsAuthorizingGdrive] = useState(false);
+  const [gdriveAuthUrl, setGdriveAuthUrl] = useState("/api/auth/gdrive/auth");
+
   useEffect(() => {
     setIsHydrated(true);
+
+    const handleMessage = (event: MessageEvent) => {
+      if (event.data?.type === "GDRIVE_AUTH_SUCCESS") {
+        setIsGdriveAuthRequired(false);
+        setIsAuthorizingGdrive(false);
+        setErrorMessage("");
+      }
+    };
+
+    window.addEventListener("message", handleMessage);
+    return () => window.removeEventListener("message", handleMessage);
   }, []);
+
+  const handleOpenGdriveAuth = () => {
+    setIsAuthorizingGdrive(true);
+    const width = 560;
+    const height = 680;
+    const left = window.screenX + (window.outerWidth - width) / 2;
+    const top = window.screenY + (window.outerHeight - height) / 2;
+
+    const popup = window.open(
+      gdriveAuthUrl,
+      "gdrive_auth_popup",
+      `width=${width},height=${height},left=${left},top=${top},status=no,toolbar=no,menubar=no,location=no`
+    );
+
+    const timer = setInterval(() => {
+      if (!popup || popup.closed) {
+        clearInterval(timer);
+        setIsAuthorizingGdrive(false);
+        fetch("/api/auth/gdrive/status")
+          .then((r) => r.json())
+          .then((d) => {
+            if (d.isAuthorized) {
+              setIsGdriveAuthRequired(false);
+              setErrorMessage("");
+            }
+          })
+          .catch(() => {});
+      }
+    }, 1000);
+  };
 
   const isBusy =
     uploadState === "uploading" ||
@@ -120,7 +178,14 @@ export default function UploadMeetingPage() {
     } catch (error: any) {
       console.error("Upload error:", error);
       setUploadState("error");
-      setErrorMessage(error?.message || "Something went wrong.");
+
+      if (error?.requiresAuth || error instanceof DriveAuthRequiredError) {
+        setIsGdriveAuthRequired(true);
+        if (error.authUrl) setGdriveAuthUrl(error.authUrl);
+        setErrorMessage("Google Drive authorization is required. Please connect your Google account below with 1-click.");
+      } else {
+        setErrorMessage(error?.message || "Something went wrong.");
+      }
     }
   };
 
@@ -142,7 +207,7 @@ export default function UploadMeetingPage() {
               </p>
             </div>
 
-            {}
+            {/* Toggle Switch */}
             <div className="flex items-center gap-1.5 p-1 rounded-xl border border-border bg-muted/40 shrink-0 self-start md:self-auto shadow-2xs">
               <button
                 type="button"
@@ -175,8 +240,10 @@ export default function UploadMeetingPage() {
         <FadeIn delay={0.05}>
           <form onSubmit={handleSubmit} className="space-y-6 rounded-xl border border-border bg-card p-6 shadow-xs">
 
+            {/* ─── Top 2-Column Section (Audio + Details) ───────────────────── */}
             <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
 
+              {/* Left Column: Audio Input */}
               <div className="space-y-2 flex flex-col h-full">
                 <Label className="text-sm font-semibold">
                   {activeTab === "upload" ? "Audio Recording File" : "Studio Audio Input"}
@@ -264,6 +331,7 @@ export default function UploadMeetingPage() {
                 )}
               </div>
 
+              {/* Right Column: Meeting Info Inputs */}
               <div className="space-y-4">
                 <div className="space-y-2">
                   <Label htmlFor="title" className="text-sm font-semibold">Meeting Title</Label>
@@ -398,6 +466,7 @@ export default function UploadMeetingPage() {
               </div>
             </div>
 
+            {/* ─── Upload State & Feedback ──────────────────────────────────── */}
             {uploadState !== "idle" && (
               <div className="border border-border rounded-lg p-4 bg-muted/40 space-y-2">
                 <div className="flex items-center justify-between text-sm">
@@ -441,9 +510,24 @@ export default function UploadMeetingPage() {
                 )}
 
                 {uploadState === "error" && (
-                  <div className="flex items-start text-sm text-destructive gap-2 p-3 rounded-lg bg-destructive/10 border border-destructive/20">
-                    <AlertCircle className="size-5 shrink-0 mt-0.5" />
-                    <span className="whitespace-pre-line text-xs font-medium leading-relaxed">{errorMessage}</span>
+                  <div className="flex flex-col gap-3 p-3 rounded-lg bg-destructive/10 border border-destructive/20">
+                    <div className="flex items-start text-sm text-destructive gap-2">
+                      <AlertCircle className="size-5 shrink-0 mt-0.5" />
+                      <span className="whitespace-pre-line text-xs font-medium leading-relaxed">{errorMessage}</span>
+                    </div>
+
+                    {isGdriveAuthRequired && (
+                      <Button
+                        type="button"
+                        onClick={handleOpenGdriveAuth}
+                        disabled={isAuthorizingGdrive}
+                        size="sm"
+                        className="bg-primary text-primary-foreground text-xs font-bold gap-2 self-start mt-1"
+                      >
+                        {isAuthorizingGdrive ? <Loader2 className="size-3.5 animate-spin" /> : <ExternalLink className="size-3.5" />}
+                        {isAuthorizingGdrive ? "Authorizing in popup..." : "Connect Google Drive (1-Click)"}
+                      </Button>
+                    )}
                   </div>
                 )}
               </div>

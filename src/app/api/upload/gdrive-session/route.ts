@@ -25,8 +25,10 @@ export async function POST(req: Request) {
     if (!session.isDriveConfigured) {
       return NextResponse.json({
         isDriveConfigured: false,
+        requiresAuth: session.requiresAuth ?? true,
+        authUrl: session.authUrl || "/api/auth/gdrive/auth",
         error: session.error || "Google Drive OAuth is not authenticated.",
-        message: session.error || "Google Drive OAuth credentials not configured.",
+        message: session.error || "Google Drive authorization is required.",
       });
     }
 
