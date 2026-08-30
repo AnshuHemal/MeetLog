@@ -386,13 +386,11 @@ async function writeTranscriptSegments(
 
       const newSpeakerLabels = uniqueSpeakers
         .filter((speakerId) => !existingSet.has(speakerId))
-        .map((speakerId) => {
-          const speakerNum = parseInt(speakerId.replace(/\D/g, ""), 10);
-          const displayName = isNaN(speakerNum) ? speakerId : `Speaker ${speakerNum + 1}`;
+        .map((speakerId, index) => {
           return {
             meetingId,
             speakerId,
-            displayName,
+            displayName: `Speaker ${index + 1}`,
           };
         });
 

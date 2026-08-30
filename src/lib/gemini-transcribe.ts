@@ -28,6 +28,9 @@ export interface GeminiMultiPartJobPayload {
   }>;
 }
 
+// 8MB chunk size for Google AI Files Resumable Upload protocol
+const GOOGLE_AI_CHUNK_SIZE = 8 * 1024 * 1024;
+
 /**
  * Downloads audio file into a Buffer from Google Drive or direct URL
  */
@@ -37,7 +40,6 @@ async function downloadAudioBuffer(audioUrl: string): Promise<Buffer> {
   if (audioUrl.includes("drive.google.com")) {
     const { downloadGoogleDriveFile } = await import("./gdrive");
     const buffer = await downloadGoogleDriveFile(audioUrl);
-    // Sanity check to ensure Google Drive didn't return an HTML error page
     const sample = buffer.subarray(0, 64).toString("utf8").toLowerCase();
     if (sample.includes("<!doctype html") || sample.includes("<html")) {
       throw new Error("Google Drive download returned an HTML error page. Please re-authorize Google Drive in Integrations.");
@@ -47,7 +49,7 @@ async function downloadAudioBuffer(audioUrl: string): Promise<Buffer> {
 
   const res = await axios.get(audioUrl, {
     responseType: "arraybuffer",
-    timeout: 120000,
+    timeout: 600000, // 10 minutes timeout for large audio downloads
   });
 
   const buffer = Buffer.from(res.data);
@@ -59,7 +61,7 @@ async function downloadAudioBuffer(audioUrl: string): Promise<Buffer> {
 }
 
 /**
- * Uploads an audio buffer to Google AI Resumable Files API
+ * Uploads an audio buffer to Google AI Resumable Files API in chunks with robust retry
  */
 async function uploadAudioToGoogleAI(
   audioBuffer: Buffer,
@@ -67,7 +69,9 @@ async function uploadAudioToGoogleAI(
   fileName: string = "meeting_audio.mp3",
   mimeType: string = "audio/mp3"
 ): Promise<{ fileUri: string; fileResourceName: string }> {
-  console.log(`[GOOGLE AI FILES] Initiating resumable upload (${(audioBuffer.length / (1024 * 1024)).toFixed(1)}MB)...`);
+  const totalBytes = audioBuffer.length;
+  const totalMb = (totalBytes / (1024 * 1024)).toFixed(1);
+  console.log(`[GOOGLE AI FILES] Initiating resumable upload for ${totalMb}MB audio...`);
 
   const initUrl = `https://generativelanguage.googleapis.com/upload/v1beta/files?key=${apiKey}`;
   const initRes = await axios.post(
@@ -81,10 +85,11 @@ async function uploadAudioToGoogleAI(
       headers: {
         "X-Goog-Upload-Protocol": "resumable",
         "X-Goog-Upload-Command": "start",
-        "X-Goog-Upload-Header-Content-Length": audioBuffer.length.toString(),
+        "X-Goog-Upload-Header-Content-Length": totalBytes.toString(),
         "X-Goog-Upload-Header-Content-Type": mimeType,
         "Content-Type": "application/json",
       },
+      timeout: 60000,
     }
   );
 
@@ -93,18 +98,56 @@ async function uploadAudioToGoogleAI(
     throw new Error("Google AI Files API did not return an upload URL.");
   }
 
-  console.log(`[GOOGLE AI FILES] Streaming audio bytes to upload endpoint...`);
-  const uploadRes = await axios.post(uploadUrl, audioBuffer, {
-    headers: {
-      "Content-Length": audioBuffer.length.toString(),
-      "X-Goog-Upload-Offset": "0",
-      "X-Goog-Upload-Command": "upload, finalize",
-      "Content-Type": mimeType,
-    },
-    timeout: 120000,
-  });
+  let uploadedOffset = 0;
+  let fileData: any = null;
 
-  const fileData = uploadRes.data?.file;
+  while (uploadedOffset < totalBytes) {
+    const chunkEnd = Math.min(uploadedOffset + GOOGLE_AI_CHUNK_SIZE, totalBytes);
+    const chunk = audioBuffer.subarray(uploadedOffset, chunkEnd);
+    const isLastChunk = chunkEnd >= totalBytes;
+    const chunkLength = chunk.length;
+
+    const progressPercent = Math.round((chunkEnd / totalBytes) * 100);
+    console.log(
+      `[GOOGLE AI FILES] Uploading chunk: ${uploadedOffset / 1024 / 1024 | 0}MB-${chunkEnd / 1024 / 1024 | 0}MB / ${totalMb}MB (${progressPercent}%)...`
+    );
+
+    let chunkSuccess = false;
+    let lastError: any = null;
+
+    for (let attempt = 1; attempt <= 3; attempt++) {
+      try {
+        const uploadRes = await axios.post(uploadUrl, chunk, {
+          headers: {
+            "Content-Length": chunkLength.toString(),
+            "X-Goog-Upload-Offset": uploadedOffset.toString(),
+            "X-Goog-Upload-Command": isLastChunk ? "upload, finalize" : "upload",
+            "Content-Type": mimeType,
+          },
+          timeout: 300000, // 5 minutes per chunk
+          maxBodyLength: Infinity,
+          maxContentLength: Infinity,
+        });
+
+        if (isLastChunk) {
+          fileData = uploadRes.data?.file;
+        }
+
+        chunkSuccess = true;
+        uploadedOffset = chunkEnd;
+        break;
+      } catch (err: any) {
+        lastError = err;
+        console.warn(`[GOOGLE AI FILES] Chunk upload attempt ${attempt}/3 failed: ${err.message}. Retrying...`);
+        await new Promise((r) => setTimeout(r, attempt * 1500));
+      }
+    }
+
+    if (!chunkSuccess) {
+      throw new Error(`Google AI Files upload failed at offset ${uploadedOffset}/${totalBytes}: ${lastError?.message || "Network error"}`);
+    }
+  }
+
   if (!fileData || !fileData.uri) {
     throw new Error("Failed to get uploaded file URI from Google AI Files API.");
   }
@@ -123,7 +166,7 @@ async function deleteGoogleAIFile(fileResourceName: string, apiKey: string): Pro
   try {
     const name = fileResourceName.startsWith("files/") ? fileResourceName : `files/${fileResourceName}`;
     const deleteUrl = `https://generativelanguage.googleapis.com/v1beta/${name}?key=${apiKey}`;
-    await axios.delete(deleteUrl);
+    await axios.delete(deleteUrl, { timeout: 30000 });
     console.log(`[GOOGLE AI FILES] Cleaned up temporary file ${name}`);
   } catch (err: any) {
     console.warn(`[GOOGLE AI FILES] Failed to delete file ${fileResourceName}:`, err.message);
@@ -131,7 +174,7 @@ async function deleteGoogleAIFile(fileResourceName: string, apiKey: string): Pro
 }
 
 /**
- * Executes Gemini 3.5 Transcribe on a single audio slice with automatic key pool rotation
+ * Executes Gemini 3.5 Transcribe & Gemini 3.6 Flash on an audio slice with automatic key pool rotation
  */
 async function transcribeSingleAudioSlice(
   audioBuffer: Buffer,
@@ -149,7 +192,7 @@ async function transcribeSingleAudioSlice(
   let fileResourceName: string | null = null;
 
   try {
-    console.log(`[GEMINI 3.5 TRANSCRIBE] Processing Part ${slice.partIndex}/${slice.totalParts} with key ${keyId.slice(0, 8)}...`);
+    console.log(`[GEMINI TRANSCRIBE] Processing Part ${slice.partIndex}/${slice.totalParts} with key ${keyId.slice(0, 8)}...`);
 
     const { fileUri, fileResourceName: resName } = await uploadAudioToGoogleAI(
       audioBuffer,
@@ -159,12 +202,79 @@ async function transcribeSingleAudioSlice(
     );
     fileResourceName = resName;
 
-    const speakerHint = numSpeakers ? `There are approximately ${numSpeakers} distinct speakers in this meeting.` : "Identify distinct speakers (e.g. Speaker 1, Speaker 2).";
+    let transcriptionData: GeminiTranscriptionResult | null = null;
+    let lastModelError: any = null;
 
-    const prompt = `You are a world-class speech-to-text intelligence system.
+    // 1. First Tier: Try dedicated Google Gemini 3.5 Transcribe on the Interactions API
+    try {
+      console.log(`[GEMINI 3.5 TRANSCRIBE] Invoking dedicated speech model 'gemini-3.5-transcribe' on Interactions API...`);
+      const interactionsRes = await axios.post(
+        `https://generativelanguage.googleapis.com/v1beta/interactions?key=${apiKey}`,
+        {
+          model: "gemini-3.5-transcribe",
+          input: [
+            {
+              type: "audio",
+              uri: fileUri,
+              mime_type: "audio/mp3",
+            },
+          ],
+        },
+        {
+          headers: { "Content-Type": "application/json" },
+          timeout: 600000, // 10 minutes timeout
+          validateStatus: () => true,
+        }
+      );
+
+      if (interactionsRes.status === 200 && interactionsRes.data) {
+        const data = interactionsRes.data;
+        if (Array.isArray(data.segments) && data.segments.length > 0) {
+          transcriptionData = {
+            entries: data.segments.map((s: any) => ({
+              speaker_id: s.speaker_tag || s.speaker || "Speaker 1",
+              start_time_seconds: Number(s.start_offset ?? s.start_time_seconds ?? 0),
+              end_time_seconds: Number(s.end_offset ?? s.end_time_seconds ?? 0),
+              transcript: String(s.text || s.transcript || "").trim(),
+            })),
+          };
+          console.log(`[GEMINI 3.5 TRANSCRIBE] Success! Interactions API returned ${transcriptionData.entries.length} diarized segments.`);
+        } else if (Array.isArray(data.entries) && data.entries.length > 0) {
+          transcriptionData = { entries: data.entries };
+          console.log(`[GEMINI 3.5 TRANSCRIBE] Success! Interactions API returned ${transcriptionData.entries.length} entries.`);
+        } else if (data.output_text) {
+          transcriptionData = {
+            entries: [
+              {
+                speaker_id: "Speaker 1",
+                start_time_seconds: 0,
+                end_time_seconds: slice.durationSeconds || 0,
+                transcript: data.output_text.trim(),
+              },
+            ],
+          };
+          console.log(`[GEMINI 3.5 TRANSCRIBE] Success! Received output_text (${data.output_text.length} chars).`);
+        }
+      } else {
+        lastModelError = interactionsRes.data;
+        console.warn(`[GEMINI 3.5 TRANSCRIBE] Interactions API returned HTTP ${interactionsRes.status}. Cascading to Gemini 3.6 Flash...`);
+      }
+    } catch (intErr: any) {
+      console.warn(`[GEMINI 3.5 TRANSCRIBE] Interactions API cascade:`, intErr.message);
+    }
+
+    // 2. Second Tier: Fallback to Gemini 3.6 Flash / 3.5 Flash Multimodal Speech Diarization
+    if (!transcriptionData || transcriptionData.entries.length === 0) {
+      const speakerHint = numSpeakers ? `There are approximately ${numSpeakers} distinct speakers in this meeting.` : "Identify distinct speakers (e.g. Speaker 1, Speaker 2).";
+      const durationNotice = slice.durationSeconds > 0
+        ? `CRITICAL TIMELINE: This audio clip duration is EXACTLY ${Math.round(slice.durationSeconds)} seconds long. The first word begins at 0.0s and the last word finishes at or before ${Math.round(slice.durationSeconds)}.0s. All start_time_seconds and end_time_seconds must accurately reflect this timeline.`
+        : "";
+
+      const prompt = `You are a world-class speech-to-text intelligence system.
 Transcribe the provided audio file with extreme accuracy, verbatim fidelity, and precise speaker diarization.
 
 ${speakerHint}
+${durationNotice}
 
 Requirements:
 1. Provide exact start_time_seconds and end_time_seconds (relative to the beginning of this audio chunk starting at 0.0s) for each spoken turn.
@@ -185,66 +295,64 @@ Response Schema:
   ]
 }`;
 
-    // Try dedicated gemini-3.5-transcribe first, fallback to gemini-3.5-flash / gemini-2.5-flash
-    const modelsToTry = ["gemini-3.5-transcribe", "gemini-3.5-flash", "gemini-2.5-flash"];
-    let transcriptionData: GeminiTranscriptionResult | null = null;
-    let lastModelError: any = null;
+      const modelsToTry = ["gemini-3.6-flash", "gemini-3.5-flash"];
 
-    for (const modelName of modelsToTry) {
-      try {
-        console.log(`[GEMINI 3.5 TRANSCRIBE] Invoking model ${modelName}...`);
-        const generateUrl = `https://generativelanguage.googleapis.com/v1beta/models/${modelName}:generateContent?key=${apiKey}`;
+      for (const modelName of modelsToTry) {
+        try {
+          console.log(`[GEMINI TRANSCRIBE] Invoking multimodal model ${modelName}...`);
+          const generateUrl = `https://generativelanguage.googleapis.com/v1beta/models/${modelName}:generateContent?key=${apiKey}`;
 
-        const generateRes = await axios.post(
-          generateUrl,
-          {
-            contents: [
-              {
-                parts: [
-                  {
-                    file_data: {
-                      file_uri: fileUri,
-                      mime_type: "audio/mp3",
+          const generateRes = await axios.post(
+            generateUrl,
+            {
+              contents: [
+                {
+                  parts: [
+                    {
+                      file_data: {
+                        file_uri: fileUri,
+                        mime_type: "audio/mp3",
+                      },
                     },
-                  },
-                  {
-                    text: prompt,
-                  },
-                ],
+                    {
+                      text: prompt,
+                    },
+                  ],
+                },
+              ],
+              generationConfig: {
+                responseMimeType: "application/json",
+                temperature: 0.1,
               },
-            ],
-            generationConfig: {
-              responseMimeType: "application/json",
-              temperature: 0.1,
             },
-          },
-          {
-            headers: {
-              "Content-Type": "application/json",
-            },
-            timeout: 180000,
-            validateStatus: () => true,
-          }
-        );
+            {
+              headers: {
+                "Content-Type": "application/json",
+              },
+              timeout: 600000, // 10 minutes timeout for processing
+              validateStatus: () => true,
+            }
+          );
 
-        if (generateRes.status === 200) {
-          const rawText = generateRes.data?.candidates?.[0]?.content?.parts?.[0]?.text;
-          if (rawText) {
-            transcriptionData = JSON.parse(rawText.trim());
-            console.log(`[GEMINI 3.5 TRANSCRIBE] Model ${modelName} returned ${transcriptionData?.entries?.length || 0} diarized segments!`);
-            break;
+          if (generateRes.status === 200) {
+            const rawText = generateRes.data?.candidates?.[0]?.content?.parts?.[0]?.text;
+            if (rawText) {
+              transcriptionData = JSON.parse(rawText.trim());
+              console.log(`[GEMINI TRANSCRIBE] Model ${modelName} returned ${transcriptionData?.entries?.length || 0} diarized segments!`);
+              break;
+            }
+          } else if (generateRes.status === 429) {
+            throw new Error(`Rate limit exceeded (429): ${JSON.stringify(generateRes.data)}`);
+          } else {
+            lastModelError = generateRes.data;
+            console.warn(`[GEMINI TRANSCRIBE] Model ${modelName} returned HTTP ${generateRes.status}, trying fallback...`);
           }
-        } else if (generateRes.status === 429) {
-          throw new Error(`Rate limit exceeded (429): ${JSON.stringify(generateRes.data)}`);
-        } else {
-          lastModelError = generateRes.data;
-          console.warn(`[GEMINI 3.5 TRANSCRIBE] Model ${modelName} returned HTTP ${generateRes.status}, trying fallback...`);
+        } catch (mErr: any) {
+          if (mErr.message?.includes("429") || mErr.message?.includes("quota")) {
+            throw mErr;
+          }
+          lastModelError = mErr;
         }
-      } catch (mErr: any) {
-        if (mErr.message?.includes("429") || mErr.message?.includes("quota")) {
-          throw mErr;
-        }
-        lastModelError = mErr;
       }
     }
 
@@ -252,19 +360,38 @@ Response Schema:
       throw new Error(`Gemini transcription failed to produce segments. Last error: ${JSON.stringify(lastModelError)}`);
     }
 
+    // Calibrate timestamps to ensure they align with the probed audio duration
+    const rawEntries = transcriptionData.entries;
+    if (slice.durationSeconds > 0 && rawEntries.length > 0) {
+      const maxRawEnd = Math.max(...rawEntries.map((e) => e.end_time_seconds));
+      if (maxRawEnd > slice.durationSeconds + 1) {
+        const scaleFactor = slice.durationSeconds / maxRawEnd;
+        for (const e of rawEntries) {
+          e.start_time_seconds = Math.round(e.start_time_seconds * scaleFactor * 100) / 100;
+          e.end_time_seconds = Math.min(
+            slice.durationSeconds,
+            Math.round(e.end_time_seconds * scaleFactor * 100) / 100
+          );
+        }
+      }
+    }
+
     await reportKeySuccess(keyId);
-    return { entries: transcriptionData.entries };
+    return { entries: rawEntries };
 
   } catch (error: any) {
     console.error(`[GEMINI KEY ERROR] Part ${slice.partIndex} with key ${keyId.slice(0, 8)} failed:`, error.message);
 
-    if (error.message?.includes("429") || error.message?.includes("quota") || error.message?.includes("RESOURCE_EXHAUSTED")) {
-      await reportKeyRateLimit(keyId, 60, error.message);
-    } else if (error.message?.includes("402") || error.message?.includes("insufficient_quota")) {
-      await reportKeyExhausted(keyId, error.message);
+    const isTimeout = error.code === "ECONNABORTED" || error.message?.includes("timeout");
+    if (!isTimeout) {
+      if (error.message?.includes("429") || error.message?.includes("quota") || error.message?.includes("RESOURCE_EXHAUSTED")) {
+        await reportKeyRateLimit(keyId, 60, error.message);
+      } else if (error.message?.includes("402") || error.message?.includes("insufficient_quota")) {
+        await reportKeyExhausted(keyId, error.message);
+      }
     }
 
-    // Rotate to next key
+    // Rotate to next available key
     return transcribeSingleAudioSlice(audioBuffer, slice, languageCode, numSpeakers, [...excludedKeyIds, keyId]);
   } finally {
     if (fileResourceName) {
@@ -311,29 +438,14 @@ export async function startGeminiTranscriptionJob(
     for (const entry of partEntries) {
       allEntries.push({
         speaker_id: entry.speaker_id || "Speaker 1",
-        start_time_seconds: entry.start_time_seconds + slice.startOffsetSeconds,
-        end_time_seconds: entry.end_time_seconds + slice.startOffsetSeconds,
+        start_time_seconds: Math.round((entry.start_time_seconds + slice.startOffsetSeconds) * 100) / 100,
+        end_time_seconds: Math.round((entry.end_time_seconds + slice.startOffsetSeconds) * 100) / 100,
         transcript: entry.transcript,
       });
     }
   }
 
-  // Store combined entries in meeting payload for the processor
-  const payload: GeminiMultiPartJobPayload = {
-    isMultiPart: slices.length > 1,
-    provider: "GEMINI",
-    meetingId,
-    audioUrl,
-    parts: slices.map((s) => ({
-      partIndex: s.partIndex,
-      totalParts: s.totalParts,
-      startOffsetSeconds: s.startOffsetSeconds,
-      durationSeconds: s.durationSeconds,
-    })),
-  };
-
   const jobId = `gemini_${meetingId}_${Date.now()}`;
-
   (globalThis as any)[`gemini_transcription_${jobId}`] = allEntries;
 
   return { jobId };

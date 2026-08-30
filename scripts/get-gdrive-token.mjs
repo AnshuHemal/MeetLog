@@ -5,10 +5,7 @@ import readline from "readline";
 import axios from "axios";
 
 /**
- * Google Drive OAuth Refresh Token Generator
- *
- * This utility uses your GOOGLE_CLIENT_ID and GOOGLE_CLIENT_SECRET
- * from .env to generate a valid, permanent GOOGLE_REFRESH_TOKEN.
+ * Google Drive Permanent OAuth Refresh Token Generator
  */
 
 const envPath = path.resolve(process.cwd(), ".env");
@@ -47,25 +44,33 @@ authUrl.searchParams.set("scope", SCOPES);
 authUrl.searchParams.set("access_type", "offline");
 authUrl.searchParams.set("prompt", "consent");
 
-console.log("\n=======================================================");
-console.log("   🔑 Google Drive OAuth Refresh Token Generator");
-console.log("=======================================================\n");
+console.log("\n=======================================================================");
+console.log("   🔑 Google Drive Permanent OAuth Refresh Token Generator");
+console.log("=======================================================================\n");
+
+console.log("CRITICAL STEP TO MAKE THIS TOKEN PERMANENT (NEVER EXPIRE AFTER 7 DAYS):");
+console.log("1. Open Google Cloud Console: https://console.cloud.google.com/apis/credentials/consent");
+console.log("2. Under 'Publishing status', click the blue button 👉 [ PUBLISH APP ]");
+console.log("   (When in Production mode, Google refresh tokens NEVER expire!)");
+console.log("-----------------------------------------------------------------------\n");
+
 console.log("Using Client ID:", clientId);
 console.log("\nOption A (Automatic):");
-console.log("1. Add this Authorized redirect URI to your Google Cloud OAuth Client:");
+console.log("1. Ensure this redirect URI is in Google Cloud Console -> Authorized redirect URIs:");
 console.log(`   👉  ${REDIRECT_URI}`);
-console.log("\n2. Open this link in your browser to authorize:");
+console.log("\n2. Open this link in your browser to authorize connect.hemal@gmail.com:");
 console.log(`👉  ${authUrl.toString()}\n`);
 
+console.log("-----------------------------------------------------------------------");
 console.log("Option B (OAuth Playground):");
-console.log("1. Go to https://developers.google.com/oauthplayground");
-console.log("2. Click the ⚙️ (Settings) top-right, check 'Use your own OAuth credentials'");
-console.log(`   - OAuth Client ID: ${clientId}`);
-console.log(`   - OAuth Client secret: ${clientSecret}`);
+console.log("1. Open: https://developers.google.com/oauthplayground");
+console.log("2. Click ⚙️ (Settings) top-right, check 'Use your own OAuth credentials'");
+console.log(`   - Client ID: ${clientId}`);
+console.log(`   - Client secret: ${clientSecret}`);
 console.log("3. In Step 1, select 'Drive API v3' -> 'https://www.googleapis.com/auth/drive'");
-console.log("4. Click 'Authorize APIs' and log in with your Google account");
+console.log("4. Click 'Authorize APIs' and log in with connect.hemal@gmail.com");
 console.log("5. In Step 2, click 'Exchange authorization code for tokens'");
-console.log("6. Copy the 'Refresh token' value and paste it in your .env as GOOGLE_REFRESH_TOKEN=...\n");
+console.log("6. Copy the 'Refresh token' value (starts with 1//...) and paste it below!\n");
 
 let server;
 try {
@@ -86,9 +91,9 @@ try {
         res.writeHead(200, { "Content-Type": "text/html" });
         res.end(`
           <html>
-            <body style="font-family: sans-serif; text-align: center; padding: 50px;">
+            <body style="font-family: sans-serif; text-align: center; padding: 50px; background: #0f172a; color: white;">
               <h1 style="color: #10b981;">Authorization Successful!</h1>
-              <p>You can close this tab and return to your terminal.</p>
+              <p style="color: #94a3b8;">Google Drive has been connected for connect.hemal@gmail.com. You can close this tab.</p>
             </body>
           </html>
         `);
@@ -100,7 +105,7 @@ try {
 
   server.listen(8085, () => {
     console.log("Waiting for authorization on http://localhost:8085/oauth2callback ...");
-    console.log("(Or paste an authorization code from OAuth Playground / Google Redirect below)\n");
+    console.log("(Or paste an authorization code or refresh token below)\n");
     promptManualCode();
   });
 } catch (e) {
@@ -117,9 +122,8 @@ function promptManualCode() {
     rl.close();
     let val = answer.trim();
 
-    // If user directly pasted a refresh token (starts with 1//)
     if (val.startsWith("1//") || val.startsWith("1/")) {
-      console.log("\nDirect refresh token detected!");
+      console.log("\n✅ Direct refresh token detected!");
       updateEnvFile("GOOGLE_REFRESH_TOKEN", val);
       console.log("\n🚀 Google Drive storage is now configured in .env!\n");
       if (server) server.close();
@@ -143,13 +147,14 @@ async function exchangeCodeForTokens(code, redirectUri) {
     redirectUri,
     "https://developers.google.com/oauthplayground",
     "http://localhost:3000",
+    "http://localhost:3000/api/auth/gdrive/callback",
     "urn:ietf:wg:oauth:2.0:oob",
   ];
 
   let success = false;
   for (const rUri of candidateRedirects) {
     try {
-      console.log(`\nExchanging code with redirect_uri: ${rUri}...`);
+      console.log(`Exchanging code with redirect_uri: ${rUri}...`);
       const response = await axios.post(
         "https://oauth2.googleapis.com/token",
         new URLSearchParams({
@@ -170,7 +175,7 @@ async function exchangeCodeForTokens(code, redirectUri) {
         console.warn("\n⚠️ Google returned an access token without a refresh token.");
         console.warn("Please re-authenticate and make sure you approve offline access consent.");
       } else {
-        console.log("\n🎉 Successfully obtained new Refresh Token!");
+        console.log("\n🎉 Successfully obtained new Permanent Refresh Token!");
         console.log(`GOOGLE_REFRESH_TOKEN=${refresh_token}\n`);
         updateEnvFile("GOOGLE_REFRESH_TOKEN", refresh_token);
       }
@@ -183,7 +188,7 @@ async function exchangeCodeForTokens(code, redirectUri) {
         console.log(`✅ Verified! Connected to Drive: ${driveTest.data.user?.emailAddress || "Authorized User"}`);
       }
 
-      console.log("\n🚀 Google Drive storage is now fully ready for large file uploads!\n");
+      console.log("\n🚀 Google Drive storage is now fully ready for all workspace uploads!\n");
       success = true;
       break;
     } catch (err) {
@@ -207,7 +212,7 @@ function updateEnvFile(key, value) {
     let content = fs.readFileSync(envPath, "utf-8");
 
     if (content.match(new RegExp(`^${key}=.*$`, "m"))) {
-      content = content.replace(new RegExp(`^${key}=.*$`, "m"), `${key}=${value}`);
+      content = content.replace(new RegExp(`^${key}=.*$`, "gm"), `${key}=${value}`);
     } else {
       content += `\n${key}=${value}\n`;
     }

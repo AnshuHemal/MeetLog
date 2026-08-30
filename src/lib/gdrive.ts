@@ -1,6 +1,7 @@
 import axios from "axios";
 import fs from "fs";
 import path from "path";
+import crypto from "crypto";
 import { prisma } from "./prisma";
 
 function cleanEnv(val?: string): string {
@@ -57,6 +58,75 @@ export function updateEnvFile(key: string, value: string) {
   } catch (err: any) {
     console.error("[GDRIVE] Failed to write to .env file:", err.message);
   }
+}
+
+/**
+ * Generates an access token using a Google Cloud Service Account (Zero OAuth, Zero Expiry)
+ */
+async function getServiceAccountAccessToken(): Promise<string | null> {
+  const clientEmail = cleanEnv(process.env.GOOGLE_SERVICE_ACCOUNT_EMAIL);
+  const privateKeyRaw = cleanEnv(process.env.GOOGLE_SERVICE_ACCOUNT_PRIVATE_KEY);
+
+  if (!clientEmail || !privateKeyRaw) {
+    return null;
+  }
+
+  try {
+    const now = Math.floor(Date.now() / 1000);
+    const header = { alg: "RS256", typ: "JWT" };
+    const claimSet = {
+      iss: clientEmail,
+      scope: "https://www.googleapis.com/auth/drive https://www.googleapis.com/auth/drive.file",
+      aud: "https://oauth2.googleapis.com/token",
+      exp: now + 3600,
+      iat: now,
+    };
+
+    const encodeBase64Url = (obj: any) =>
+      Buffer.from(JSON.stringify(obj))
+        .toString("base64")
+        .replace(/=/g, "")
+        .replace(/\+/g, "-")
+        .replace(/\//g, "_");
+
+    const unsignedToken = `${encodeBase64Url(header)}.${encodeBase64Url(claimSet)}`;
+
+    const sign = crypto.createSign("RSA-SHA256");
+    sign.update(unsignedToken);
+    sign.end();
+
+    const formattedKey = privateKeyRaw.replace(/\\n/g, "\n");
+    const signature = sign
+      .sign(formattedKey, "base64")
+      .replace(/=/g, "")
+      .replace(/\+/g, "-")
+      .replace(/\//g, "_");
+
+    const jwt = `${unsignedToken}.${signature}`;
+
+    const res = await axios.post(
+      "https://oauth2.googleapis.com/token",
+      new URLSearchParams({
+        grant_type: "urn:ietf:params:oauth:grant-type:jwt-bearer",
+        assertion: jwt,
+      }),
+      {
+        headers: { "Content-Type": "application/x-www-form-urlencoded" },
+        timeout: 10000,
+      }
+    );
+
+    const accessToken = res.data?.access_token || null;
+    if (accessToken) {
+      cachedAccessToken = accessToken;
+      tokenExpiresAt = Date.now() + 3500 * 1000;
+      return accessToken;
+    }
+  } catch (err: any) {
+    console.error("[GDRIVE SERVICE ACCOUNT ERROR]", err.response?.data || err.message);
+  }
+
+  return null;
 }
 
 /**
@@ -134,7 +204,6 @@ export async function exchangeGoogleDriveAuthCode(
       updateEnvFile("GOOGLE_REFRESH_TOKEN", refresh_token);
     }
 
-    // Verify connection by getting user email
     let userEmail = "Google Drive User";
     try {
       const driveTest = await axios.get("https://www.googleapis.com/drive/v3/about?fields=user", {
@@ -155,7 +224,7 @@ export async function exchangeGoogleDriveAuthCode(
 
 /**
  * Automatically resolves and fetches a valid Google Drive Access Token
- * Checks cache -> .env -> Database (Account table fallback) -> refreshes token
+ * Checks cache -> Service Account -> OAuth Refresh Token -> Database fallback
  */
 export async function getGoogleDriveAccessTokenDetails(): Promise<DriveTokenResult> {
   // 1. Check in-memory cache
@@ -163,11 +232,17 @@ export async function getGoogleDriveAccessTokenDetails(): Promise<DriveTokenResu
     return { accessToken: cachedAccessToken };
   }
 
+  // 2. Check Service Account credentials first (Zero OAuth, Zero Expiry)
+  const serviceAccountToken = await getServiceAccountAccessToken();
+  if (serviceAccountToken) {
+    return { accessToken: serviceAccountToken };
+  }
+
   const clientId = cleanEnv(process.env.GOOGLE_CLIENT_ID);
   const clientSecret = cleanEnv(process.env.GOOGLE_CLIENT_SECRET);
   let refreshToken = cleanEnv(process.env.GOOGLE_REFRESH_TOKEN);
 
-  // 2. Database Fallback: if not in .env, check if a connected Google Account has a refresh token
+  // 3. Database Fallback: if not in .env, check if a connected Google Account has a refresh token
   if (!refreshToken) {
     try {
       const googleAccount = await prisma.account.findFirst({
@@ -202,11 +277,11 @@ export async function getGoogleDriveAccessTokenDetails(): Promise<DriveTokenResu
       accessToken: null,
       requiresAuth: true,
       authUrl: "/api/auth/gdrive/auth",
-      error: "Google Drive authorization is required. Click below to authorize with 1-click.",
+      error: "Google Drive authorization is required. Please set up your permanent refresh token.",
     };
   }
 
-  // 3. Exchange refresh token with Google
+  // 4. Exchange refresh token with Google
   try {
     const response = await axios.post(
       "https://oauth2.googleapis.com/token",
@@ -230,7 +305,6 @@ export async function getGoogleDriveAccessTokenDetails(): Promise<DriveTokenResu
       cachedAccessToken = newAccessToken;
       tokenExpiresAt = Date.now() + (expiresIn * 1000);
 
-      // If Google rotated the refresh token, persist it automatically
       if (newRefreshToken && newRefreshToken !== refreshToken) {
         updateEnvFile("GOOGLE_REFRESH_TOKEN", newRefreshToken);
       }
@@ -257,7 +331,7 @@ export async function getGoogleDriveAccessTokenDetails(): Promise<DriveTokenResu
       requiresAuth: isInvalidGrant,
       authUrl: "/api/auth/gdrive/auth",
       error: isInvalidGrant
-        ? "Google Drive authorization has expired. Click below to re-authorize Google Drive with 1-click."
+        ? "Google Drive authorization has expired. Your Google Cloud OAuth Consent Screen is currently in 'Testing' mode (which expires after 7 days). Set it to 'Production' in Google Cloud Console and re-authorize once to make it permanent forever."
         : `Google Drive OAuth error: ${errCode}${errDesc}`,
     };
   }
@@ -281,7 +355,7 @@ export async function createDriveResumableSession(options: {
       isDriveConfigured: false,
       requiresAuth: tokenResult.requiresAuth,
       authUrl: tokenResult.authUrl || "/api/auth/gdrive/auth",
-      error: tokenResult.error || "Could not authenticate with Google Drive OAuth.",
+      error: tokenResult.error || "Could not authenticate with Google Drive storage.",
     };
   }
 

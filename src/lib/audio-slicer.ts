@@ -87,24 +87,6 @@ export async function sliceAudioBuffer(
   audioBuffer: Buffer,
   originalFileName: string = "meeting.mp3"
 ): Promise<AudioSlice[]> {
-  // Fast Path: Audio under 100MB is well within the 2-hour single job limit.
-  // Bypass disk I/O and ffmpeg invocation completely for instantaneous processing.
-  if (audioBuffer.byteLength <= 100 * 1024 * 1024) {
-    console.log(
-      `[AUDIO SLICER] Audio size is ${(audioBuffer.byteLength / (1024 * 1024)).toFixed(1)}MB (<= 100MB threshold). Using single-slice fast path.`
-    );
-    return [
-      {
-        buffer: audioBuffer,
-        partIndex: 1,
-        totalParts: 1,
-        startOffsetSeconds: 0,
-        durationSeconds: 0,
-        fileName: `part_1_${originalFileName}`,
-      },
-    ];
-  }
-
   const sessionId = randomUUID();
   const tmpDir = join(os.tmpdir(), `meetlog_slice_${sessionId}`);
   await mkdir(tmpDir, { recursive: true });
@@ -121,9 +103,10 @@ export async function sliceAudioBuffer(
 
     const durationSeconds = await getAudioDuration(inputFilePath);
     console.log(
-      `[AUDIO SLICER] Input audio size: ${Math.round(audioBuffer.byteLength / (1024 * 1024))}MB, Duration: ${durationSeconds}s (~${Math.round(durationSeconds / 60)} mins)`
+      `[AUDIO SLICER] Input audio size: ${Math.round(audioBuffer.byteLength / (1024 * 1024))}MB, Exact Duration: ${durationSeconds}s (~${Math.round(durationSeconds / 60)} mins)`
     );
 
+    // If audio is under max safe duration (2 hours), return single slice with exact probed duration
     if (durationSeconds > 0 && durationSeconds <= MAX_SAFE_SARVAM_DURATION) {
       return [
         {
@@ -132,6 +115,19 @@ export async function sliceAudioBuffer(
           totalParts: 1,
           startOffsetSeconds: 0,
           durationSeconds,
+          fileName: `part_1_${originalFileName}`,
+        },
+      ];
+    }
+
+    if (audioBuffer.byteLength <= 100 * 1024 * 1024 && durationSeconds === 0) {
+      return [
+        {
+          buffer: audioBuffer,
+          partIndex: 1,
+          totalParts: 1,
+          startOffsetSeconds: 0,
+          durationSeconds: 0,
           fileName: `part_1_${originalFileName}`,
         },
       ];
