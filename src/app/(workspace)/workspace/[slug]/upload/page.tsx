@@ -14,6 +14,7 @@ import {
   Cpu,
   KeyRound,
   ExternalLink,
+  Terminal,
 } from "lucide-react";
 import { motion, AnimatePresence } from "motion/react";
 
@@ -26,6 +27,11 @@ import { createMeetingAction } from "./actions";
 import { FadeIn } from "@/components/motion/fade-in";
 import { uploadAudioToGoogleDrive, DriveAuthRequiredError } from "@/lib/gdrive-client-upload";
 import { AudioStudioRecorder } from "@/components/shared/audio-studio-recorder";
+import {
+  PipelineTerminal,
+  TerminalLogEntry,
+  formatTerminalTimestamp,
+} from "@/components/shared/pipeline-terminal";
 
 export default function UploadMeetingPage() {
   const params = useParams();
@@ -42,12 +48,31 @@ export default function UploadMeetingPage() {
   const [progress, setProgress] = useState(0);
   const [errorMessage, setErrorMessage] = useState("");
   const [isHydrated, setIsHydrated] = useState(false);
+  const [showTerminal, setShowTerminal] = useState(false);
+  const [terminalLogs, setTerminalLogs] = useState<TerminalLogEntry[]>([]);
   const fileInputRef = useRef<HTMLInputElement>(null);
 
   // In-app Google Drive OAuth state
   const [isGdriveAuthRequired, setIsGdriveAuthRequired] = useState(false);
   const [isAuthorizingGdrive, setIsAuthorizingGdrive] = useState(false);
   const [gdriveAuthUrl, setGdriveAuthUrl] = useState("/api/auth/gdrive/auth");
+
+  const addLog = (
+    level: TerminalLogEntry["level"],
+    category: string,
+    message: string
+  ) => {
+    setTerminalLogs((prev) => [
+      ...prev,
+      {
+        id: `log-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
+        timestamp: formatTerminalTimestamp(),
+        level,
+        category,
+        message,
+      },
+    ]);
+  };
 
   useEffect(() => {
     setIsHydrated(true);
@@ -57,6 +82,7 @@ export default function UploadMeetingPage() {
         setIsGdriveAuthRequired(false);
         setIsAuthorizingGdrive(false);
         setErrorMessage("");
+        addLog("success", "auth", "Google Drive authorized successfully! Ready to resume upload.");
       }
     };
 
@@ -66,6 +92,7 @@ export default function UploadMeetingPage() {
 
   const handleOpenGdriveAuth = () => {
     setIsAuthorizingGdrive(true);
+    addLog("info", "oauth", "Opening Google OAuth authorization window...");
     const width = 560;
     const height = 680;
     const left = window.screenX + (window.outerWidth - width) / 2;
@@ -87,6 +114,7 @@ export default function UploadMeetingPage() {
             if (d.isAuthorized) {
               setIsGdriveAuthRequired(false);
               setErrorMessage("");
+              addLog("success", "oauth", `Google Drive connected (${d.email || "Active"}).`);
             }
           })
           .catch(() => {});
@@ -146,20 +174,33 @@ export default function UploadMeetingPage() {
     }
 
     try {
+      setShowTerminal(true);
       setErrorMessage("");
       setUploadState("uploading");
       setProgress(0);
+      setTerminalLogs([]);
 
+      addLog("info", "pipeline", `Starting pipeline execution for "${title}"`);
+      addLog("storage", "upload", `Initializing 2MB resumable upload for ${(file.size / (1024 * 1024)).toFixed(1)}MB audio file...`);
+
+      let lastReportedPercent = -1;
       const { audioUrl, duration } = await uploadAudioToGoogleDrive(file, (percent) => {
         setProgress(percent);
+        if (percent !== lastReportedPercent && (percent % 20 === 0 || percent === 100)) {
+          lastReportedPercent = percent;
+          addLog("storage", "chunk", `Cloud transfer progress: ${percent}% completed`);
+        }
       });
 
       if (!audioUrl) {
         throw new Error("Upload failed: no audio URL was returned.");
       }
 
+      addLog("success", "storage", "Audio file successfully stored in cloud storage!");
+      addLog("ai", "transcribe", `Submitting meeting to ${provider === "GEMINI" ? "Google Gemini 3.5 Transcribe" : "Sarvam AI"} cluster...`);
+
       setUploadState("submitting");
-      await createMeetingAction({
+      const result = await createMeetingAction({
         workspaceSlug: slug,
         title,
         description: description || undefined,
@@ -170,14 +211,21 @@ export default function UploadMeetingPage() {
         provider,
       });
 
+      addLog("success", "pipeline", "Meeting registered in database! Redirecting to live intelligence monitor...");
       setUploadState("success");
+
       setTimeout(() => {
-        router.push(`/workspace/${slug}`);
-      }, 1500);
+        if (result?.meetingId) {
+          router.push(`/workspace/${slug}/meetings/${result.meetingId}`);
+        } else {
+          router.push(`/workspace/${slug}`);
+        }
+      }, 1200);
 
     } catch (error: any) {
       console.error("Upload error:", error);
       setUploadState("error");
+      addLog("error", "error", error?.message || "Something went wrong during upload pipeline.");
 
       if (error?.requiresAuth || error instanceof DriveAuthRequiredError) {
         setIsGdriveAuthRequired(true);
@@ -197,8 +245,8 @@ export default function UploadMeetingPage() {
         pageTitle="Upload Meeting"
       />
 
-      <main className="flex-1 p-6 w-full">
-        <FadeIn direction="down" className="mb-6">
+      <main className="flex-1 p-6 w-full max-w-5xl mx-auto space-y-6">
+        <FadeIn direction="down" className="mb-2">
           <div className="flex flex-col md:flex-row md:items-center justify-between gap-4">
             <div>
               <h1 className="text-2xl font-bold tracking-tight text-foreground">Meeting Intelligence Studio</h1>
@@ -285,7 +333,7 @@ export default function UploadMeetingPage() {
                             <span>{(file.size / (1024 * 1024)).toFixed(1)} MB</span>
                             <span>•</span>
                             <span className="text-emerald-600 dark:text-emerald-400 font-medium">
-                              ~{Math.ceil(file.size / (6 * 1024 * 1024))} Chunks
+                              ~{Math.ceil(file.size / (2 * 1024 * 1024))} Chunks
                             </span>
                           </div>
                         </div>
@@ -468,10 +516,10 @@ export default function UploadMeetingPage() {
 
             {/* ─── Upload State & Feedback ──────────────────────────────────── */}
             {uploadState !== "idle" && (
-              <div className="border border-border rounded-lg p-4 bg-muted/40 space-y-2">
+              <div className="border border-border rounded-lg p-4 bg-muted/40 space-y-4">
                 <div className="flex items-center justify-between text-sm">
                   <span className="font-medium text-foreground">
-                    {uploadState === "uploading" && "Uploading file to cloud..."}
+                    {uploadState === "uploading" && "Uploading file to cloud storage..."}
                     {uploadState === "submitting" && (
                       provider === "GEMINI"
                         ? "Transcribing with Google Gemini 3.5..."
@@ -481,13 +529,16 @@ export default function UploadMeetingPage() {
                     {uploadState === "error" && "An error occurred"}
                   </span>
                   {uploadState === "uploading" && (
-                    <span className="text-muted-foreground">{progress}%</span>
+                    <span className="text-muted-foreground font-mono font-bold">{progress}%</span>
                   )}
                 </div>
 
                 {uploadState === "uploading" && (
-                  <div className="w-full bg-border rounded-full h-1.5 overflow-hidden">
-                    <div className="bg-primary h-full transition-all duration-300" style={{ width: `${progress}%` }} />
+                  <div className="w-full bg-border rounded-full h-2 overflow-hidden">
+                    <div
+                      className="bg-gradient-to-r from-primary to-emerald-500 h-full transition-all duration-300 shadow-xs"
+                      style={{ width: `${progress}%` }}
+                    />
                   </div>
                 )}
 
@@ -505,7 +556,7 @@ export default function UploadMeetingPage() {
                 {uploadState === "success" && (
                   <div className="flex items-center text-sm text-green-600 dark:text-green-400 gap-2">
                     <CheckCircle2 className="size-4" />
-                    <span>Redirecting to your dashboard...</span>
+                    <span>Redirecting to your live dashboard monitor...</span>
                   </div>
                 )}
 
@@ -530,6 +581,20 @@ export default function UploadMeetingPage() {
                     )}
                   </div>
                 )}
+
+                {/* ─── Real-Time Live Pipeline Terminal ────────────────────── */}
+                {showTerminal && (
+                  <div className="pt-2">
+                    <PipelineTerminal
+                      logs={terminalLogs}
+                      title="Live Cloud Execution Stream"
+                      engineName={provider === "GEMINI" ? "Gemini 3.5" : "Sarvam Saaras"}
+                      isLive={uploadState !== "error" && uploadState !== "success"}
+                      maxHeight="220px"
+                      onClear={() => setTerminalLogs([])}
+                    />
+                  </div>
+                )}
               </div>
             )}
 
@@ -546,7 +611,17 @@ export default function UploadMeetingPage() {
                 type="submit"
                 disabled={!canSubmit}
               >
-                Upload & Process
+                {uploadState === "uploading" ? (
+                  <>
+                    <Loader2 className="size-4 animate-spin mr-2" /> Uploading ({progress}%)
+                  </>
+                ) : uploadState === "submitting" ? (
+                  <>
+                    <Loader2 className="size-4 animate-spin mr-2" /> Initializing AI...
+                  </>
+                ) : (
+                  "Upload & Process"
+                )}
               </Button>
             </div>
 

@@ -1,8 +1,8 @@
 "use client";
 
 // Google Drive Resumable Upload requires chunks to be multiples of 256 KB.
-// 2 MB (2,097,152 bytes = 8 * 256 KB) is ideal because it stays well below
-// Next.js, Vercel (4.5MB), and proxy body limits (avoiding HTTP 413 errors).
+// 2 MB (2,097,152 bytes = 8 * 256 KB) is optimal: it stays well below
+// Next.js / Vercel body limits (avoiding HTTP 413) and avoids browser CORS blocks.
 const CHUNK_SIZE = 2 * 1024 * 1024;
 
 export interface DriveUploadResult {
@@ -73,7 +73,6 @@ export async function uploadAudioToGoogleDrive(
   let uploadedBytes = 0;
   let fileId = "";
   let finalUrl = "";
-  let useDirectUpload = true;
 
   onProgress?.(0);
 
@@ -88,53 +87,24 @@ export async function uploadAudioToGoogleDrive(
 
     for (let attempt = 1; attempt <= 3; attempt++) {
       try {
-        let status = 0;
-        let responseData: any = {};
+        const proxyResponse = await fetch("/api/upload/gdrive-chunk", {
+          method: "POST",
+          headers: {
+            "x-upload-url": uploadUrl,
+            "x-content-range": contentRange,
+            "Content-Type": "application/octet-stream",
+          },
+          body: chunk,
+        });
 
-        // Strategy 1: Attempt direct upload to Google Drive first (fastest, 0 server bandwidth)
-        if (useDirectUpload) {
-          try {
-            const directResponse = await fetch(uploadUrl, {
-              method: "PUT",
-              headers: {
-                "Content-Range": contentRange,
-                "Content-Length": String(chunkLength),
-                "Content-Type": "application/octet-stream",
-              },
-              body: chunk,
-            });
-
-            status = directResponse.status;
-            if (status === 200 || status === 201) {
-              responseData = await directResponse.json().catch(() => ({}));
-            }
-          } catch (directErr: any) {
-            console.warn("[GDRIVE] Direct browser upload failed (CORS/Network), switching to proxy chunks:", directErr.message);
-            useDirectUpload = false;
-          }
+        if (!proxyResponse.ok) {
+          const errJson = await proxyResponse.json().catch(() => ({}));
+          throw new Error(errJson.error || `Chunk proxy error (${proxyResponse.status})`);
         }
 
-        // Strategy 2: Fallback to server-side chunk proxy (2MB safe chunks)
-        if (!useDirectUpload) {
-          const proxyResponse = await fetch("/api/upload/gdrive-chunk", {
-            method: "POST",
-            headers: {
-              "x-upload-url": uploadUrl,
-              "x-content-range": contentRange,
-              "Content-Type": "application/octet-stream",
-            },
-            body: chunk,
-          });
-
-          if (!proxyResponse.ok) {
-            const errJson = await proxyResponse.json().catch(() => ({}));
-            throw new Error(errJson.error || `Chunk proxy error (${proxyResponse.status})`);
-          }
-
-          const proxyResult = await proxyResponse.json();
-          status = proxyResult.status;
-          responseData = proxyResult.data || {};
-        }
+        const proxyResult = await proxyResponse.json();
+        const status = proxyResult.status;
+        const responseData = proxyResult.data || {};
 
         uploadedBytes += chunkLength;
         const progressPercent = Math.min(99, Math.round((uploadedBytes / totalSize) * 100));
@@ -152,7 +122,7 @@ export async function uploadAudioToGoogleDrive(
           break;
         }
 
-        throw new Error(`Unexpected Google Drive status: ${status}`);
+        throw new Error(`Unexpected Google Drive response status: ${status}`);
       } catch (err: any) {
         lastChunkError = err.message || "Network transfer error";
         console.warn(`[GDRIVE CHUNK RETRY] Chunk ${start}-${end} attempt ${attempt} failed: ${lastChunkError}`);
