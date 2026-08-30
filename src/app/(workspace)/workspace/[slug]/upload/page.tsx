@@ -12,11 +12,9 @@ import {
   Sparkles,
   Globe,
   Cpu,
-  KeyRound,
   ExternalLink,
-  Terminal,
 } from "lucide-react";
-import { motion, AnimatePresence } from "motion/react";
+import { motion } from "motion/react";
 
 import { WorkspaceTopbar } from "../_components/workspace-topbar";
 import { Button } from "@/components/ui/button";
@@ -211,6 +209,10 @@ export default function UploadMeetingPage() {
         provider,
       });
 
+      if (!result.success) {
+        throw new Error(result.error || "Failed to initialize meeting.");
+      }
+
       addLog("success", "pipeline", "Meeting registered in database! Redirecting to live intelligence monitor...");
       setUploadState("success");
 
@@ -220,7 +222,7 @@ export default function UploadMeetingPage() {
         } else {
           router.push(`/workspace/${slug}`);
         }
-      }, 1200);
+      }, 800);
 
     } catch (error: any) {
       console.error("Upload error:", error);
@@ -522,7 +524,7 @@ export default function UploadMeetingPage() {
                     {uploadState === "uploading" && "Uploading file to cloud storage..."}
                     {uploadState === "submitting" && (
                       provider === "GEMINI"
-                        ? "Transcribing with Google Gemini 3.5..."
+                        ? "Initializing Google Gemini 3.5 pipeline..."
                         : "Submitting transcription job to Sarvam AI..."
                     )}
                     {uploadState === "success" && "Meeting registered successfully!"}
@@ -547,7 +549,7 @@ export default function UploadMeetingPage() {
                     <Loader2 className="size-4 animate-spin text-primary" />
                     <span>
                       {provider === "GEMINI"
-                        ? "Streaming audio to Google AI Studio & extracting diarized speech..."
+                        ? "Registering meeting in intelligence pipeline..."
                         : "Communicating with Sarvam AI cluster... Please do not close this window."}
                     </span>
                   </div>

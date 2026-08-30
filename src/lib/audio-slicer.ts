@@ -4,7 +4,6 @@ import { writeFile, readFile, unlink, mkdir } from "fs/promises";
 import { join } from "path";
 import os from "os";
 import { randomUUID } from "crypto";
-
 import { existsSync } from "fs";
 
 const execFileAsync = promisify(execFile);
@@ -81,13 +80,31 @@ export async function getAudioDuration(filePath: string): Promise<number> {
 
 /**
  * Slices an audio buffer into parts if it exceeds the maximum safe duration for Sarvam AI.
- * If the audio is <= 7000s, returns the original buffer as a single slice.
- * If > 7000s, losslessly splits the audio into 90-minute (5400s) chunks with zero quality loss.
+ * If the audio is <= 100MB or <= 7000s, returns the original buffer as a single slice instantly.
+ * If > 100MB, losslessly splits the audio into 90-minute (5400s) chunks with zero quality loss.
  */
 export async function sliceAudioBuffer(
   audioBuffer: Buffer,
   originalFileName: string = "meeting.mp3"
 ): Promise<AudioSlice[]> {
+  // Fast Path: Audio under 100MB is well within the 2-hour single job limit.
+  // Bypass disk I/O and ffmpeg invocation completely for instantaneous processing.
+  if (audioBuffer.byteLength <= 100 * 1024 * 1024) {
+    console.log(
+      `[AUDIO SLICER] Audio size is ${(audioBuffer.byteLength / (1024 * 1024)).toFixed(1)}MB (<= 100MB threshold). Using single-slice fast path.`
+    );
+    return [
+      {
+        buffer: audioBuffer,
+        partIndex: 1,
+        totalParts: 1,
+        startOffsetSeconds: 0,
+        durationSeconds: 0,
+        fileName: `part_1_${originalFileName}`,
+      },
+    ];
+  }
+
   const sessionId = randomUUID();
   const tmpDir = join(os.tmpdir(), `meetlog_slice_${sessionId}`);
   await mkdir(tmpDir, { recursive: true });
@@ -107,24 +124,19 @@ export async function sliceAudioBuffer(
       `[AUDIO SLICER] Input audio size: ${Math.round(audioBuffer.byteLength / (1024 * 1024))}MB, Duration: ${durationSeconds}s (~${Math.round(durationSeconds / 60)} mins)`
     );
 
-    // If audio is within single job limit (<= 7000s) or duration is 0 for normal file sizes (< 100MB), return single slice
-    if (
-      (durationSeconds > 0 && durationSeconds <= MAX_SAFE_SARVAM_DURATION) ||
-      (durationSeconds <= 0 && audioBuffer.byteLength <= 100 * 1024 * 1024)
-    ) {
+    if (durationSeconds > 0 && durationSeconds <= MAX_SAFE_SARVAM_DURATION) {
       return [
         {
           buffer: audioBuffer,
           partIndex: 1,
           totalParts: 1,
           startOffsetSeconds: 0,
-          durationSeconds: durationSeconds > 0 ? durationSeconds : 0,
+          durationSeconds,
           fileName: `part_1_${originalFileName}`,
         },
       ];
     }
 
-    // Only split if duration is genuinely > 7000s or size exceeds 100MB
     const totalParts =
       durationSeconds > 0
         ? Math.ceil(durationSeconds / CHUNK_DURATION_SECONDS)
