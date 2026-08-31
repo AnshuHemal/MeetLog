@@ -15,6 +15,7 @@ import {
 import { generateMeetingInsights, generateMeetingChapters } from "@/lib/gemini";
 import { collectUniqueSpeakerIds, normalizeSpeakerId } from "@/lib/speaker-id";
 import { notifyMeetingFailed } from "@/lib/dead-letter";
+import { addMeetingLog } from "@/lib/pipeline-logger";
 
 const MAX_RETRIES = 8;
 
@@ -35,6 +36,7 @@ function log(msg: string) {
 
 async function updateProgressMessage(meetingId: string, message: string) {
   log(`[Progress Update] ${message}`);
+  addMeetingLog(meetingId, "info", "PIPELINE", message);
   try {
     await prisma.meeting.update({
       where: { id: meetingId },
@@ -47,6 +49,7 @@ async function updateProgressMessage(meetingId: string, message: string) {
 
 export async function processCompletedTranscription(meetingId: string) {
   log(`Processing completed transcription for meeting: ${meetingId}`);
+  addMeetingLog(meetingId, "info", "PIPELINE", `Beginning transcription processing pipeline for meeting ${meetingId}...`);
 
   const meeting = await prisma.meeting.findUnique({
     where: { id: meetingId },
@@ -176,12 +179,15 @@ export async function processCompletedTranscription(meetingId: string) {
       return aStart - bStart;
     });
 
-    log(`Total combined transcript entries: ${combinedEntries.length}`);
+    addMeetingLog(meetingId, "success", "TRANSCRIPT", `Total combined transcript entries: ${combinedEntries.length}`);
 
     await updateProgressMessage(meetingId, "Formatting and saving transcript entries to database...");
+    addMeetingLog(meetingId, "storage", "DATABASE", `Writing ${combinedEntries.length} transcript segments and speaker labels to database...`);
     await writeTranscriptSegments(meetingId, combinedEntries);
 
+    addMeetingLog(meetingId, "ai", "INSIGHTS", "Generating executive summary, structured chapters, and action items via Gemini...");
     await generateAIInsights(meetingId, combinedEntries);
+    addMeetingLog(meetingId, "success", "INSIGHTS", "AI Insights & Chapters generated successfully!");
 
     const maxSegmentDuration = combinedEntries.reduce((max, entry) => {
       const end = parseFloat(entry.end_time_seconds?.toString() || "0");
@@ -200,6 +206,7 @@ export async function processCompletedTranscription(meetingId: string) {
       },
     });
 
+    addMeetingLog(meetingId, "success", "COMPLETE", `Meeting intelligence processing completed successfully in full! (Duration: ${maxSegmentDuration}s)`);
     log(`Meeting ${meetingId} processed successfully! (Duration: ${maxSegmentDuration}s)`);
   } catch (error: any) {
     log(`ERROR processing meeting ${meetingId}: ${error.message}`);

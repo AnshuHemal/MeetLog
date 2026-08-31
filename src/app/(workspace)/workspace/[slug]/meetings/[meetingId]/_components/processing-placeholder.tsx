@@ -120,12 +120,21 @@ export function ProcessingPlaceholder({
     async function checkStatus() {
       try {
         const response = await axios.get(`/api/meetings/${meetingId}/status`);
-        const { status, progressMessage: serverProgressMessage } = response.data;
+        const { status, progressMessage: serverProgressMessage, logs: serverLogs } = response.data;
 
         if (!active) return;
 
         if (serverProgressMessage) {
           setProgressMessage(serverProgressMessage);
+        }
+
+        if (Array.isArray(serverLogs) && serverLogs.length > 0) {
+          setLogs((prev) => {
+            const existingIds = new Set(prev.map((l) => l.id));
+            const newEntries = serverLogs.filter((l: any) => !existingIds.has(l.id));
+            if (newEntries.length === 0) return prev;
+            return [...prev, ...newEntries];
+          });
         }
 
         if (status === "COMPLETED") {
@@ -136,12 +145,12 @@ export function ProcessingPlaceholder({
               timestamp: formatTerminalTimestamp(),
               level: "success",
               category: "complete",
-              message: "Meeting transcription & AI synthesis complete! Reloading viewer...",
+              message: "Meeting transcription & AI synthesis complete! Loading workspace viewer...",
             },
           ]);
           setTimeout(() => {
             window.location.reload();
-          }, 800);
+          }, 600);
         } else if (status === "FAILED") {
           setLogs((prev) => [
             ...prev,
@@ -165,7 +174,7 @@ export function ProcessingPlaceholder({
     }
 
     checkStatus();
-    const pollInterval = setInterval(checkStatus, 6000);
+    const pollInterval = setInterval(checkStatus, 2500);
 
     return () => {
       active = false;
@@ -179,7 +188,7 @@ export function ProcessingPlaceholder({
   );
 
   return (
-    <div className="w-full max-w-5xl mx-auto space-y-6">
+    <div className="w-full max-w-7xl mx-auto space-y-6">
       {/* ─── Top Header Card ────────────────────────────────────────────── */}
       <div className="flex flex-col md:flex-row items-center justify-between gap-4 p-6 rounded-2xl border border-border bg-card shadow-sm relative overflow-hidden">
         <div className="flex items-center gap-4">

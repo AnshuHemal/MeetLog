@@ -247,7 +247,7 @@ export default function UploadMeetingPage() {
         pageTitle="Upload Meeting"
       />
 
-      <main className="flex-1 p-6 w-full max-w-5xl mx-auto space-y-6">
+      <main className="flex-1 px-4 sm:px-6 lg:px-8 py-6 w-full mx-auto space-y-6">
         <FadeIn direction="down" className="mb-2">
           <div className="flex flex-col md:flex-row md:items-center justify-between gap-4">
             <div>

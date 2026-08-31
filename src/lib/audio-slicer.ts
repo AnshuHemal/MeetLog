@@ -85,11 +85,18 @@ export async function getAudioDuration(filePath: string): Promise<number> {
  */
 export async function sliceAudioBuffer(
   audioBuffer: Buffer,
-  originalFileName: string = "meeting.mp3"
+  originalFileName: string = "meeting.mp3",
+  customChunkDuration?: number,
+  customMaxThreshold?: number,
+  overlapSeconds: number = 6
 ): Promise<AudioSlice[]> {
   const sessionId = randomUUID();
   const tmpDir = join(os.tmpdir(), `meetlog_slice_${sessionId}`);
   await mkdir(tmpDir, { recursive: true });
+
+  const chunkDuration = customChunkDuration || CHUNK_DURATION_SECONDS;
+  const maxThreshold = customMaxThreshold || MAX_SAFE_SARVAM_DURATION;
+  const stepDuration = Math.max(10, chunkDuration - overlapSeconds);
 
   const ext = originalFileName.includes(".")
     ? originalFileName.split(".").pop() || "mp3"
@@ -106,8 +113,8 @@ export async function sliceAudioBuffer(
       `[AUDIO SLICER] Input audio size: ${Math.round(audioBuffer.byteLength / (1024 * 1024))}MB, Exact Duration: ${durationSeconds}s (~${Math.round(durationSeconds / 60)} mins)`
     );
 
-    // If audio is under max safe duration (2 hours), return single slice with exact probed duration
-    if (durationSeconds > 0 && durationSeconds <= MAX_SAFE_SARVAM_DURATION) {
+    // If audio is under max safe threshold, return single slice with exact probed duration
+    if (durationSeconds > 0 && durationSeconds <= maxThreshold) {
       return [
         {
           buffer: audioBuffer,
@@ -135,7 +142,7 @@ export async function sliceAudioBuffer(
 
     const totalParts =
       durationSeconds > 0
-        ? Math.ceil(durationSeconds / CHUNK_DURATION_SECONDS)
+        ? Math.ceil(durationSeconds / stepDuration)
         : Math.max(1, Math.ceil(audioBuffer.byteLength / (100 * 1024 * 1024)));
 
     if (totalParts <= 1) {
@@ -152,7 +159,7 @@ export async function sliceAudioBuffer(
     }
 
     console.log(
-      `[AUDIO SLICER] Audio duration (${durationSeconds}s) exceeds threshold. Splitting into ${totalParts} sub-parts (${CHUNK_DURATION_SECONDS / 60} mins each)...`
+      `[AUDIO SLICER] Audio duration (${durationSeconds}s) exceeds threshold (${maxThreshold}s). Splitting into ${totalParts} frame-accurate sub-parts (${chunkDuration}s each, ${overlapSeconds}s overlap)...`
     );
 
     const ffmpegPath = getFfmpegPath();
@@ -160,60 +167,43 @@ export async function sliceAudioBuffer(
 
     for (let i = 0; i < totalParts; i++) {
       const partNumber = i + 1;
-      const startOffset = i * CHUNK_DURATION_SECONDS;
+      const startOffset = i * stepDuration;
       const partDuration =
         durationSeconds > 0
-          ? Math.min(CHUNK_DURATION_SECONDS, Math.max(1, durationSeconds - startOffset))
-          : CHUNK_DURATION_SECONDS;
+          ? Math.min(chunkDuration, Math.max(1, durationSeconds - startOffset))
+          : chunkDuration;
+
+      // Skip if startOffset already exceeds duration
+      if (durationSeconds > 0 && startOffset >= durationSeconds) {
+        break;
+      }
 
       const outputFilePath = join(tmpDir, `slice_part_${partNumber}.${ext}`);
       tempFilesToClean.push(outputFilePath);
 
       console.log(
-        `[AUDIO SLICER] Slicing Part ${partNumber}/${totalParts}: ${Math.floor(startOffset / 60)}m to ${Math.floor((startOffset + partDuration) / 60)}m (duration: ${partDuration}s)...`
+        `[AUDIO SLICER] Slicing Part ${partNumber}/${totalParts}: ${Math.floor(startOffset / 60)}m${startOffset % 60}s to ${Math.floor((startOffset + partDuration) / 60)}m${(startOffset + partDuration) % 60}s (duration: ${partDuration}s)...`
       );
 
-      try {
-        // Fast lossless stream copy
-        await execFileAsync(ffmpegPath, [
-          "-ss",
-          String(startOffset),
-          "-i",
-          inputFilePath,
-          "-t",
-          String(partDuration),
-          "-c",
-          "copy",
-          "-avoid_negative_ts",
-          "make_zero",
-          "-y",
-          outputFilePath,
-        ]);
-      } catch (streamCopyErr: any) {
-        console.warn(
-          `[AUDIO SLICER] Stream copy failed for Part ${partNumber}, falling back to fast transcoding:`,
-          streamCopyErr.message
-        );
-        // Fallback to fast mp3 transcode with explicit audio parameters
-        await execFileAsync(ffmpegPath, [
-          "-ss",
-          String(startOffset),
-          "-i",
-          inputFilePath,
-          "-t",
-          String(partDuration),
-          "-acodec",
-          "libmp3lame",
-          "-b:a",
-          "128k",
-          "-ar",
-          "44100",
-          "-ac",
-          "2",
-          "-y",
-          outputFilePath,
-        ]);
-      }
+      // Clean, frame-accurate re-encoding to prevent missing audio frames or corrupted MP3 boundaries
+      await execFileAsync(ffmpegPath, [
+        "-ss",
+        String(startOffset),
+        "-i",
+        inputFilePath,
+        "-t",
+        String(partDuration),
+        "-acodec",
+        "libmp3lame",
+        "-b:a",
+        "128k",
+        "-ar",
+        "44100",
+        "-ac",
+        "2",
+        "-y",
+        outputFilePath,
+      ]);
 
       const sliceBuffer = await readFile(outputFilePath);
       console.log(

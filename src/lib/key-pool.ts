@@ -9,6 +9,19 @@ export interface KeyPoolSelection {
   isFallbackEnv?: boolean;
 }
 
+export function parseGoogleRetryDelay(errorMsg: string): number {
+  const match =
+    String(errorMsg).match(/retry in\s*([\d\.]+)\s*s/i) ||
+    String(errorMsg).match(/retryDelay"?:\s*"(\d+)s"/i);
+  if (match) {
+    const sec = parseFloat(match[1]);
+    if (!isNaN(sec) && sec > 0) {
+      return Math.ceil(sec) + 1;
+    }
+  }
+  return 25; // Default 25s for Gemini free tier RPM
+}
+
 export async function getAvailableKey(
   provider: ApiProvider,
   excludedKeyIds: string[] = []
@@ -16,6 +29,7 @@ export async function getAvailableKey(
   const now = new Date();
 
   try {
+    // 1. Auto-reactivate any rate-limited keys whose cooldown period has passed
     await prisma.apiKeyPool.updateMany({
       where: {
         provider,
@@ -30,6 +44,7 @@ export async function getAvailableKey(
       },
     });
 
+    // 2. Fetch candidates from database pool
     const candidates = await prisma.apiKeyPool.findMany({
       where: {
         provider,
@@ -58,6 +73,7 @@ export async function getAvailableKey(
     console.error(`[KEY POOL ERROR] Failed to fetch database key for provider ${provider}:`, error);
   }
 
+  // 3. Fallback to process.env key if available and not excluded
   const envKeyName = getEnvVarNameForProvider(provider);
   const envKeyVal = process.env[envKeyName];
 
@@ -71,6 +87,65 @@ export async function getAvailableKey(
   }
 
   return null;
+}
+
+/**
+ * Robust key selection that automatically waits for cooling-down keys if all keys are temporarily rate-limited.
+ */
+export async function waitForAvailableKey(
+  provider: ApiProvider,
+  excludedKeyIds: string[] = [],
+  maxWaitMs: number = 60000,
+  onWaiting?: (secondsRemaining: number) => void
+): Promise<KeyPoolSelection | null> {
+  const immediate = await getAvailableKey(provider, excludedKeyIds);
+  if (immediate) return immediate;
+
+  // If no immediate key, find the earliest resetting key
+  try {
+    const earliest = await prisma.apiKeyPool.findFirst({
+      where: {
+        provider,
+        status: "RATE_LIMITED",
+      },
+      orderBy: {
+        rateLimitResetAt: "asc",
+      },
+    });
+
+    if (earliest?.rateLimitResetAt) {
+      const now = Date.now();
+      const resetTime = earliest.rateLimitResetAt.getTime();
+      const waitTime = Math.max(1000, Math.min(maxWaitMs, resetTime - now + 500));
+      const waitSeconds = Math.ceil(waitTime / 1000);
+
+      if (waitTime > 0 && waitTime <= maxWaitMs) {
+        if (onWaiting) {
+          onWaiting(waitSeconds);
+        }
+        console.log(`[KEY POOL] All ${provider} keys rate-limited. Waiting ${waitSeconds}s for key ${earliest.id.slice(0, 8)} to reset...`);
+        await new Promise((r) => setTimeout(r, waitTime));
+
+        // Reactivate and retry
+        await prisma.apiKeyPool.update({
+          where: { id: earliest.id },
+          data: { status: "ACTIVE", rateLimitResetAt: null },
+        });
+
+        return {
+          id: earliest.id,
+          key: earliest.key,
+          provider,
+          isFallbackEnv: false,
+        };
+      }
+    }
+  } catch (err: any) {
+    console.warn(`[KEY POOL] Error in waitForAvailableKey:`, err.message);
+  }
+
+  // Final check without excluded IDs if everything was excluded
+  return getAvailableKey(provider, []);
 }
 
 export async function reportKeySuccess(keyId: string): Promise<void> {

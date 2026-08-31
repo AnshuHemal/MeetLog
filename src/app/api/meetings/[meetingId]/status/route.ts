@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from "next/server";
 import { prisma } from "@/lib/prisma";
 import { getSarvamJobStatus } from "@/lib/sarvam";
 import { processCompletedTranscription, markAsFailed } from "@/lib/transcription-processor";
+import { getMeetingLogs } from "@/lib/pipeline-logger";
 
 const processingJobs = new Set<string>();
 
@@ -13,7 +14,10 @@ export async function GET(req: NextRequest, { params }: RouteParams) {
   const { meetingId } = await params;
 
   if (processingJobs.has(meetingId)) {
-    return NextResponse.json({ status: "TRANSCRIBING" });
+    return NextResponse.json({
+      status: "TRANSCRIBING",
+      logs: getMeetingLogs(meetingId),
+    });
   }
 
   try {
@@ -26,18 +30,27 @@ export async function GET(req: NextRequest, { params }: RouteParams) {
     }
 
     if (meeting.status !== "TRANSCRIBING") {
-      return NextResponse.json({ status: meeting.status, progressMessage: meeting.progressMessage });
+      return NextResponse.json({
+        status: meeting.status,
+        progressMessage: meeting.progressMessage,
+        logs: getMeetingLogs(meetingId),
+      });
     }
 
     if (!meeting.sarvamJobId) {
       await markAsFailed(meetingId, "No transcription job ID found.");
-      return NextResponse.json({ status: "FAILED", progressMessage: "No transcription job ID found." });
+      return NextResponse.json({
+        status: "FAILED",
+        progressMessage: "No transcription job ID found.",
+        logs: getMeetingLogs(meetingId),
+      });
     }
 
     if (processingJobs.has(meetingId)) {
       return NextResponse.json({
         status: "TRANSCRIBING",
-        progressMessage: meeting.progressMessage || "Processing transcription pipeline..."
+        progressMessage: meeting.progressMessage || "Processing transcription pipeline...",
+        logs: getMeetingLogs(meetingId),
       });
     }
 
@@ -54,7 +67,8 @@ export async function GET(req: NextRequest, { params }: RouteParams) {
 
       return NextResponse.json({
         status: "TRANSCRIBING",
-        progressMessage: meeting.progressMessage || "Processing transcription with Google Gemini 3.5..."
+        progressMessage: meeting.progressMessage || "Processing transcription with Google Gemini 3.5...",
+        logs: getMeetingLogs(meetingId),
       });
     }
 

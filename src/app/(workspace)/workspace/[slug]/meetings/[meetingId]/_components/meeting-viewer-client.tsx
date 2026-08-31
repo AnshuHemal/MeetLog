@@ -523,9 +523,19 @@ export function MeetingViewerClient({
   const [autoScroll, setAutoScroll] = useState(true);
 
   const activeSegmentIndex = useMemo(() => {
-    return segments.findIndex(
+    if (!segments || segments.length === 0) return -1;
+    // 1. Exact match within segment bounds
+    const exact = segments.findIndex(
       (seg) => currentTime >= seg.startTime && currentTime <= seg.endTime
     );
+    if (exact !== -1) return exact;
+
+    // 2. Continuous speech tolerance (tracks active speaker across brief pauses)
+    return segments.findIndex((seg, idx) => {
+      const nextSeg = segments[idx + 1];
+      const nextStart = nextSeg ? nextSeg.startTime : seg.endTime + 1.5;
+      return currentTime >= seg.startTime - 0.15 && currentTime < nextStart;
+    });
   }, [segments, currentTime]);
 
   const [selectedSpeakers, setSelectedSpeakers] = useState<string[]>([]);
