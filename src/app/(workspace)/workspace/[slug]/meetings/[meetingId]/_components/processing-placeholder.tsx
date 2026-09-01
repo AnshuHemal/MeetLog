@@ -2,8 +2,9 @@
 
 import { useEffect, useState, useRef } from "react";
 import { useRouter } from "next/navigation";
-import { Loader2, RefreshCw, AudioLines, Clock, CheckCircle2, Terminal } from "lucide-react";
+import { Loader2, RefreshCw, AudioLines, Clock, CheckCircle2, Terminal, ArrowRight } from "lucide-react";
 import axios from "axios";
+import { Button } from "@/components/ui/button";
 import {
   PipelineTerminal,
   TerminalLogEntry,
@@ -33,6 +34,7 @@ export function ProcessingPlaceholder({
   const [dots, setDots] = useState("");
   const [pollCount, setPollCount] = useState(0);
   const [phaseIndex, setPhaseIndex] = useState(0);
+  const [isCompleted, setIsCompleted] = useState(false);
   const [progressMessage, setProgressMessage] = useState<string>("Initializing status handshake...");
   const [activeTab, setActiveTab] = useState<"stages" | "terminal">("terminal");
 
@@ -114,15 +116,20 @@ export function ProcessingPlaceholder({
     ]);
   }, [progressMessage]);
 
+  const isNavigatingRef = useRef(false);
+
   useEffect(() => {
     let active = true;
+    let pollInterval: NodeJS.Timeout | null = null;
 
     async function checkStatus() {
+      if (isNavigatingRef.current || !active) return;
+
       try {
         const response = await axios.get(`/api/meetings/${meetingId}/status`);
         const { status, progressMessage: serverProgressMessage, logs: serverLogs } = response.data;
 
-        if (!active) return;
+        if (!active || isNavigatingRef.current) return;
 
         if (serverProgressMessage) {
           setProgressMessage(serverProgressMessage);
@@ -138,6 +145,10 @@ export function ProcessingPlaceholder({
         }
 
         if (status === "COMPLETED") {
+          isNavigatingRef.current = true;
+          setIsCompleted(true);
+          if (pollInterval) clearInterval(pollInterval);
+
           setLogs((prev) => [
             ...prev,
             {
@@ -148,10 +159,14 @@ export function ProcessingPlaceholder({
               message: "Meeting transcription & AI synthesis complete! Loading workspace viewer...",
             },
           ]);
+
           setTimeout(() => {
-            window.location.reload();
-          }, 600);
+            window.location.replace(`/workspace/${workspaceSlug}/meetings/${meetingId}`);
+          }, 400);
         } else if (status === "FAILED") {
+          isNavigatingRef.current = true;
+          if (pollInterval) clearInterval(pollInterval);
+
           setLogs((prev) => [
             ...prev,
             {
@@ -162,8 +177,9 @@ export function ProcessingPlaceholder({
               message: `Processing failed: ${serverProgressMessage || "Unknown error"}`,
             },
           ]);
+
           setTimeout(() => {
-            window.location.reload();
+            window.location.replace(`/workspace/${workspaceSlug}/meetings/${meetingId}`);
           }, 1200);
         } else {
           setPollCount((c) => c + 1);
@@ -174,18 +190,17 @@ export function ProcessingPlaceholder({
     }
 
     checkStatus();
-    const pollInterval = setInterval(checkStatus, 2500);
+    pollInterval = setInterval(checkStatus, 2500);
 
     return () => {
       active = false;
-      clearInterval(pollInterval);
+      if (pollInterval) clearInterval(pollInterval);
     };
-  }, [meetingId, router]);
+  }, [meetingId, workspaceSlug, router]);
 
-  const calculatedProgress = Math.min(
-    98,
-    Math.max(8, phaseIndex * 20 + Math.min(18, pollCount * 2))
-  );
+  const calculatedProgress = isCompleted
+    ? 100
+    : Math.min(98, Math.max(8, phaseIndex * 20 + Math.min(18, pollCount * 2)));
 
   return (
     <div className="w-full max-w-7xl mx-auto space-y-6">
@@ -199,9 +214,13 @@ export function ProcessingPlaceholder({
 
           <div className="space-y-1 min-w-0">
             <div className="flex items-center gap-2">
-              <span className="inline-flex items-center gap-1.5 px-2.5 py-0.5 rounded-full bg-emerald-500/10 border border-emerald-500/20 text-[10px] font-bold text-emerald-600 dark:text-emerald-400 shadow-2xs">
-                <span className="size-1.5 rounded-full bg-emerald-500 animate-ping" />
-                <span>AI Pipeline Active</span>
+              <span className={`inline-flex items-center gap-1.5 px-2.5 py-0.5 rounded-full border text-[10px] font-bold shadow-2xs ${
+                isCompleted
+                  ? "bg-emerald-500/10 border-emerald-500/30 text-emerald-600 dark:text-emerald-400"
+                  : "bg-emerald-500/10 border-emerald-500/20 text-emerald-600 dark:text-emerald-400"
+              }`}>
+                <span className={`size-1.5 rounded-full ${isCompleted ? "bg-emerald-500" : "bg-emerald-500 animate-ping"}`} />
+                <span>{isCompleted ? "Processing Complete" : "AI Pipeline Active"}</span>
               </span>
               <span className="text-xs text-muted-foreground font-mono">
                 Sync #{pollCount}{dots}
@@ -243,12 +262,41 @@ export function ProcessingPlaceholder({
         </div>
       </div>
 
+      {/* ─── Completed Ready Banner ───────────────────────────────────── */}
+      {isCompleted && (
+        <div className="flex flex-col sm:flex-row items-center justify-between gap-4 p-5 rounded-2xl bg-emerald-500/10 border border-emerald-500/30 text-emerald-600 dark:text-emerald-400 shadow-sm animate-in fade-in zoom-in-95 duration-300">
+          <div className="flex items-center gap-3">
+            <div className="flex size-10 items-center justify-center rounded-xl bg-emerald-500/20 text-emerald-600 dark:text-emerald-300">
+              <CheckCircle2 className="size-6" />
+            </div>
+            <div>
+              <h4 className="text-sm font-bold text-foreground">Transcription & AI Synthesis Complete!</h4>
+              <p className="text-xs text-muted-foreground mt-0.5">All dialogue turns, speakers, summary chapters, and action items are saved.</p>
+            </div>
+          </div>
+          <Button
+            type="button"
+            onClick={() => {
+              window.location.replace(`/workspace/${workspaceSlug}/meetings/${meetingId}`);
+            }}
+            className="bg-emerald-600 hover:bg-emerald-700 text-white font-bold gap-2 text-xs shadow-md shadow-emerald-600/20 shrink-0 w-full sm:w-auto"
+          >
+            <span>Open Meeting Viewer</span>
+            <ArrowRight className="size-4" />
+          </Button>
+        </div>
+      )}
+
       {/* ─── Progress Bar & Active State ───────────────────────────────── */}
       <div className="rounded-2xl border border-border bg-card p-6 shadow-sm space-y-4">
         <div className="flex items-center justify-between text-xs font-semibold">
           <div className="flex items-center gap-2 text-foreground">
-            <Loader2 className="size-3.5 animate-spin text-primary" />
-            <span className="font-bold">{progressMessage}</span>
+            {isCompleted ? (
+              <CheckCircle2 className="size-3.5 text-emerald-500" />
+            ) : (
+              <Loader2 className="size-3.5 animate-spin text-primary" />
+            )}
+            <span className="font-bold">{isCompleted ? "Completed processing!" : progressMessage}</span>
           </div>
           <span className="text-primary font-mono font-bold">{calculatedProgress}%</span>
         </div>

@@ -48,3 +48,69 @@ export function collectUniqueSpeakerIds(
 
   return ordered;
 }
+
+/**
+ * Consolidates and removes phantom/spurious speakers.
+ * If total speakers is 1 (or expected to be 1), or if a single dominant speaker has >= 88% of speech
+ * and another speaker only has isolated stray snippets (< 6% of total speech / < 10 seconds),
+ * consolidates them into the dominant speaker.
+ */
+export function consolidateSpeakerDiarization<
+  T extends {
+    speaker_id?: string | number;
+    start_time_seconds?: number | string;
+    end_time_seconds?: number | string;
+  }
+>(entries: T[], expectedNumSpeakers?: number): T[] {
+  if (!entries || entries.length === 0) return entries;
+
+  // 1. If explicit 1 speaker was specified, force all to Speaker 1
+  if (expectedNumSpeakers === 1) {
+    for (const e of entries) {
+      e.speaker_id = "Speaker 1";
+    }
+    return entries;
+  }
+
+  // 2. Measure total duration per speaker
+  const speakerDurations = new Map<string, number>();
+  let totalDuration = 0;
+
+  for (const e of entries) {
+    const spk = normalizeSpeakerId(e.speaker_id || "Speaker 1");
+    const start = parseFloat(String(e.start_time_seconds || 0));
+    const end = parseFloat(String(e.end_time_seconds || start + 1));
+    const dur = Math.max(0.5, end - start);
+    totalDuration += dur;
+    speakerDurations.set(spk, (speakerDurations.get(spk) || 0) + dur);
+  }
+
+  if (totalDuration <= 0) return entries;
+
+  // Find dominant speaker
+  let dominantSpeaker = "SPEAKER_01";
+  let maxDuration = 0;
+
+  for (const [spk, dur] of speakerDurations.entries()) {
+    if (dur > maxDuration) {
+      maxDuration = dur;
+      dominantSpeaker = spk;
+    }
+  }
+
+  const dominantRatio = maxDuration / totalDuration;
+
+  // If dominant speaker has >= 88% of speech, eliminate micro-artifacts (< 6% of duration)
+  if (dominantRatio >= 0.88) {
+    const dominantLabel = dominantSpeaker.replace("SPEAKER_0", "Speaker ").replace("SPEAKER_", "Speaker ");
+    for (const e of entries) {
+      const spk = normalizeSpeakerId(e.speaker_id || "Speaker 1");
+      const spkDur = speakerDurations.get(spk) || 0;
+      if (spk !== dominantSpeaker && (spkDur / totalDuration < 0.06 || spkDur < 10)) {
+        e.speaker_id = dominantLabel;
+      }
+    }
+  }
+
+  return entries;
+}

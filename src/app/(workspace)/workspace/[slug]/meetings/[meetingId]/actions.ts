@@ -207,50 +207,65 @@ export async function pingUserPresenceAction(
   meetingId: string,
   workspaceSlug: string
 ) {
-  const user = await requireUser();
+  try {
+    const user = await requireUser();
 
-  const membership = await prisma.workspaceMember.findFirst({
-    where: { userId: user.id, workspace: { slug: workspaceSlug } },
-    select: { id: true },
-  });
+    const membership = await prisma.workspaceMember.findFirst({
+      where: { userId: user.id, workspace: { slug: workspaceSlug } },
+      select: { id: true },
+    });
 
-  if (!membership) throw new Error("Unauthorized");
+    if (!membership) return { success: false, activeUsers: [] };
 
-  const now = new Date();
+    // Verify meeting exists to prevent foreign key constraint violation
+    const meeting = await prisma.meeting.findUnique({
+      where: { id: meetingId },
+      select: { id: true },
+    });
 
-  await prisma.userPresence.upsert({
-    where: { userId_meetingId: { userId: user.id, meetingId } },
-    create: { userId: user.id, meetingId, updatedAt: now },
-    update: { updatedAt: now },
-  });
+    if (!meeting) {
+      return { success: false, activeUsers: [] };
+    }
 
-  const activeThreshold = new Date(Date.now() - 60000);
-  const activePresences = await prisma.userPresence.findMany({
-    where: {
-      meetingId,
-      updatedAt: { gte: activeThreshold },
-    },
-    include: {
-      user: {
-        select: {
-          id: true,
-          name: true,
-          image: true,
-          email: true,
+    const now = new Date();
+
+    await prisma.userPresence.upsert({
+      where: { userId_meetingId: { userId: user.id, meetingId } },
+      create: { userId: user.id, meetingId, updatedAt: now },
+      update: { updatedAt: now },
+    });
+
+    const activeThreshold = new Date(Date.now() - 60000);
+    const activePresences = await prisma.userPresence.findMany({
+      where: {
+        meetingId,
+        updatedAt: { gte: activeThreshold },
+      },
+      include: {
+        user: {
+          select: {
+            id: true,
+            name: true,
+            image: true,
+            email: true,
+          },
         },
       },
-    },
-  });
+    });
 
-  return {
-    success: true,
-    activeUsers: activePresences.map((p) => ({
-      id: p.user.id,
-      name: p.user.name,
-      image: p.user.image,
-      email: p.user.email,
-    })),
-  };
+    return {
+      success: true,
+      activeUsers: activePresences.map((p) => ({
+        id: p.user.id,
+        name: p.user.name,
+        image: p.user.image,
+        email: p.user.email,
+      })),
+    };
+  } catch (err: any) {
+    console.warn(`[PRESENCE] Heartbeat warning for meeting ${meetingId}:`, err.message);
+    return { success: false, activeUsers: [] };
+  }
 }
 
 export async function retryMeetingAction(meetingId: string, workspaceSlug: string) {
@@ -298,6 +313,129 @@ export async function retryMeetingAction(meetingId: string, workspaceSlug: strin
     return { success: true };
   } catch (error: any) {
     return { success: false, error: error.message || "Failed to start transcription." };
+  }
+}
+
+export async function retranscribeMeetingAction(
+  meetingId: string,
+  workspaceSlug: string,
+  provider: "GEMINI" | "SARVAM" = "GEMINI"
+) {
+  const user = await requireUser();
+
+  const membership = await prisma.workspaceMember.findFirst({
+    where: { userId: user.id, workspace: { slug: workspaceSlug } },
+  });
+  if (!membership) {
+    return { success: false, error: "Not a member of this workspace." };
+  }
+
+  const meeting = await prisma.meeting.findUnique({ where: { id: meetingId } });
+  if (!meeting) {
+    return { success: false, error: "Meeting not found." };
+  }
+
+  let jobId: string;
+  if (provider === "GEMINI") {
+    jobId = `gemini_${meeting.id}_${Date.now()}`;
+  } else {
+    const { startSarvamTranscriptionJob } = await import("@/lib/sarvam");
+    jobId = await startSarvamTranscriptionJob(
+      meeting.audioUrl,
+      meeting.languageCode,
+      meeting.numSpeakers ?? undefined
+    );
+  }
+
+  await prisma.$transaction([
+    prisma.transcriptSegment.deleteMany({ where: { meetingId } }),
+    prisma.meeting.update({
+      where: { id: meetingId },
+      data: {
+        status: "TRANSCRIBING",
+        sarvamJobId: jobId,
+        retryCount: 0,
+        lastError: null,
+        nextRetryAt: null,
+        progressMessage:
+          provider === "GEMINI"
+            ? "Queued for Google Gemini audio intelligence pipeline..."
+            : "Submitted to Sarvam AI cluster...",
+      },
+    }),
+  ]);
+
+  revalidatePath(`/workspace/${workspaceSlug}/meetings/${meetingId}`);
+  return { success: true };
+}
+
+export async function generateSummaryAction(meetingId: string, workspaceSlug: string) {
+  const user = await requireUser();
+
+  const membership = await prisma.workspaceMember.findFirst({
+    where: { userId: user.id, workspace: { slug: workspaceSlug } },
+  });
+  if (!membership) {
+    return { success: false, error: "Not a member of this workspace." };
+  }
+
+  const meeting = await prisma.meeting.findUnique({
+    where: { id: meetingId },
+    include: {
+      segments: {
+        orderBy: { index: "asc" },
+      },
+    },
+  });
+
+  if (!meeting || meeting.segments.length === 0) {
+    return { success: false, error: "No transcript segments found to summarize." };
+  }
+
+  const fullTranscript = meeting.segments
+    .map((s) => `[${s.speakerId}] ${s.text}`)
+    .join("\n");
+
+  try {
+    const { generateMeetingInsights, generateMeetingChapters } = await import("@/lib/gemini");
+    const insights = await generateMeetingInsights(fullTranscript);
+
+    await prisma.$transaction(async (tx) => {
+      await tx.meeting.update({
+        where: { id: meetingId },
+        data: {
+          summaryMarkdown: insights.summary,
+        },
+      });
+
+      if (insights.actionItems && insights.actionItems.length > 0) {
+        await tx.actionItem.deleteMany({ where: { meetingId } });
+        await tx.actionItem.createMany({
+          data: insights.actionItems.map((item) => ({
+            meetingId,
+            taskDescription: item.task,
+            assigneeName: item.assignee || null,
+            priority: "MEDIUM",
+            status: "PENDING",
+          })),
+        });
+      }
+    });
+
+    try {
+      const chapters = await generateMeetingChapters(fullTranscript);
+      if (chapters && chapters.length > 0) {
+        await prisma.meeting.update({
+          where: { id: meetingId },
+          data: { chaptersJson: JSON.stringify(chapters) },
+        });
+      }
+    } catch {}
+
+    revalidatePath(`/workspace/${workspaceSlug}/meetings/${meetingId}`);
+    return { success: true };
+  } catch (err: any) {
+    return { success: false, error: err.message || "Failed to generate summary." };
   }
 }
 

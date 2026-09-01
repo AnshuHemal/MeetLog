@@ -1,9 +1,12 @@
-import { notFound } from "next/navigation";
+import { notFound, redirect } from "next/navigation";
 import { requireUser } from "@/lib/session";
 import { prisma } from "@/lib/prisma";
 import { getAllPoolKeys } from "@/lib/key-pool";
 import { KeysPageClient } from "./_components/keys-page-client";
 import type { Metadata } from "next";
+
+export const dynamic = "force-dynamic";
+export const revalidate = 0;
 
 export const metadata: Metadata = {
   title: "API Key Pool & Rotation | MeetLog",
@@ -18,11 +21,23 @@ export default async function KeysSettingsPage({ params }: PageProps) {
   const { slug } = await params;
   const user = await requireUser();
 
-  const membership = await prisma.workspaceMember.findFirst({
-    where: { userId: user.id, workspace: { slug } },
+  const workspace = await prisma.workspace.findFirst({
+    where: {
+      slug: { equals: slug, mode: "insensitive" },
+      members: { some: { userId: user.id } },
+    },
   });
 
-  if (!membership) notFound();
+  if (!workspace) {
+    const fallbackMembership = await prisma.workspaceMember.findFirst({
+      where: { userId: user.id },
+      include: { workspace: true },
+    });
+    if (fallbackMembership) {
+      redirect(`/workspace/${fallbackMembership.workspace.slug}/settings/keys`);
+    }
+    notFound();
+  }
 
   const keys = await getAllPoolKeys();
 
@@ -47,5 +62,5 @@ export default async function KeysSettingsPage({ params }: PageProps) {
     createdAt: k.createdAt.toISOString(),
   }));
 
-  return <KeysPageClient workspaceSlug={slug} initialKeys={initialKeys} />;
+  return <KeysPageClient workspaceSlug={workspace.slug} initialKeys={initialKeys} />;
 }

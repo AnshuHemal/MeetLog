@@ -185,9 +185,41 @@ export async function processCompletedTranscription(meetingId: string) {
     addMeetingLog(meetingId, "storage", "DATABASE", `Writing ${combinedEntries.length} transcript segments and speaker labels to database...`);
     await writeTranscriptSegments(meetingId, combinedEntries);
 
-    addMeetingLog(meetingId, "ai", "INSIGHTS", "Generating executive summary, structured chapters, and action items via Gemini...");
-    await generateAIInsights(meetingId, combinedEntries);
-    addMeetingLog(meetingId, "success", "INSIGHTS", "AI Insights & Chapters generated successfully!");
+    // Pre-check: If no active Gemini keys are available right now, SKIP immediately without waiting!
+    const { getAvailableKey } = await import("./key-pool");
+    const activeKey = await getAvailableKey("GEMINI");
+
+    if (!activeKey) {
+      log(`[TRANSCRIPTION PROCESSOR] All Gemini keys currently in cooldown. Skipping summary generation.`);
+      addMeetingLog(
+        meetingId,
+        "warning",
+        "INSIGHTS",
+        "API keys currently in cooldown. Skipped summary generation so your meeting is immediately accessible!"
+      );
+      await prisma.meeting.update({
+        where: { id: meetingId },
+        data: {
+          summaryMarkdown: "> **Note**: AI Summary generation was skipped because all Gemini API keys in your pool were rate-limited or expired. Your audio transcription is 100% complete and saved! You can click 'Generate Summary' in the summary tab once keys reset.",
+        },
+      }).catch(() => {});
+    } else {
+      try {
+        addMeetingLog(meetingId, "ai", "INSIGHTS", "Generating executive summary, structured chapters, and action items via Gemini...");
+        await generateAIInsights(meetingId, combinedEntries);
+        addMeetingLog(meetingId, "success", "INSIGHTS", "AI Insights & Chapters generated successfully!");
+      } catch (insightsErr: any) {
+        console.warn(`[TRANSCRIPTION PROCESSOR] AI Insights skipped because keys expired/exhausted:`, insightsErr.message);
+        addMeetingLog(meetingId, "warning", "INSIGHTS", `Skipped summary generation (API keys rate-limited or exhausted). Full transcript is 100% preserved!`);
+        
+        await prisma.meeting.update({
+          where: { id: meetingId },
+          data: {
+            summaryMarkdown: "> **Note**: AI Summary generation was skipped because all Gemini API keys in your pool were rate-limited or expired. Your audio transcription is 100% complete and saved! You can click 'Generate Summary' in the summary tab once keys reset.",
+          },
+        }).catch(() => {});
+      }
+    }
 
     const maxSegmentDuration = combinedEntries.reduce((max, entry) => {
       const end = parseFloat(entry.end_time_seconds?.toString() || "0");
@@ -335,13 +367,20 @@ async function waitForOutputFiles(meetingId: string, jobId: string) {
 
 async function writeTranscriptSegments(
   meetingId: string,
-  entries: Array<{
+  rawEntries: Array<{
     speaker_id: string;
     start_time_seconds: string | number;
     end_time_seconds: string | number;
     transcript: string;
   }>,
 ) {
+  const meetingMeta = await prisma.meeting.findUnique({
+    where: { id: meetingId },
+    select: { numSpeakers: true },
+  });
+
+  const { consolidateSpeakerDiarization } = await import("./speaker-id");
+  const entries = consolidateSpeakerDiarization(rawEntries, meetingMeta?.numSpeakers ?? undefined);
   const uniqueSpeakers = collectUniqueSpeakerIds(entries);
 
   await prisma.$transaction(
@@ -474,6 +513,12 @@ async function generateAIInsights(
     log(`AI Insights saved. Summary length: ${insights.summary.length}, Action items: ${insights.actionItems.length}`);
   } catch (err: any) {
     log(`Gemini insights generation failed: ${err.message}. Continuing with transcription.`);
+    await prisma.meeting.update({
+      where: { id: meetingId },
+      data: {
+        summaryMarkdown: "> **Note**: AI Summary generation was skipped because all Gemini API keys in your pool were rate-limited or expired. Your audio transcription is 100% complete and saved! You can click 'Generate Summary' once your keys reset.",
+      },
+    }).catch(() => {});
   }
 
   log("Generating chapters with Gemini AI...");

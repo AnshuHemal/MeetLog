@@ -185,22 +185,24 @@ export async function sliceAudioBuffer(
         `[AUDIO SLICER] Slicing Part ${partNumber}/${totalParts}: ${Math.floor(startOffset / 60)}m${startOffset % 60}s to ${Math.floor((startOffset + partDuration) / 60)}m${(startOffset + partDuration) % 60}s (duration: ${partDuration}s)...`
       );
 
-      // Clean, frame-accurate re-encoding to prevent missing audio frames or corrupted MP3 boundaries
+      // Accurate decoding seek (-i before -ss) to guarantee bit-perfect sample alignment without packet transport drift
       await execFileAsync(ffmpegPath, [
-        "-ss",
-        String(startOffset),
         "-i",
         inputFilePath,
+        "-ss",
+        String(startOffset),
         "-t",
         String(partDuration),
+        "-avoid_negative_ts",
+        "make_zero",
         "-acodec",
         "libmp3lame",
         "-b:a",
         "128k",
         "-ar",
-        "44100",
+        "16000",
         "-ac",
-        "2",
+        "1",
         "-y",
         outputFilePath,
       ]);

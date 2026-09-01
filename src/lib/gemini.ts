@@ -1,12 +1,11 @@
 import axios from "axios";
-
-const GEMINI_API_KEY = process.env.GEMINI_API_KEY;
-const MODEL_NAME = "gemini-3.5-flash";
-const BASE_URL = `https://generativelanguage.googleapis.com/v1beta/models/${MODEL_NAME}:generateContent`;
-
-if (!GEMINI_API_KEY) {
-  console.warn("WARNING: GEMINI_API_KEY is not defined in environment variables.");
-}
+import {
+  waitForAvailableKey,
+  reportKeySuccess,
+  reportKeyRateLimit,
+  reportKeyExhausted,
+  parseGoogleRetryDelay,
+} from "./key-pool";
 
 export interface GeneratedMeetingInsights {
   summary: string;
@@ -17,36 +16,137 @@ export interface GeneratedMeetingInsights {
   }>;
 }
 
-async function callGeminiForChunk(promptText: string): Promise<GeneratedMeetingInsights> {
-  const response = await axios.post(
-    `${BASE_URL}?key=${GEMINI_API_KEY}`,
-    {
-      contents: [{ parts: [{ text: promptText }] }],
-      generationConfig: {
-        responseMimeType: "application/json",
-        temperature: 0.2,
-      },
-    },
-    { headers: { "Content-Type": "application/json" } }
-  );
+export interface GeneratedMeetingChapter {
+  startTime: number;
+  endTime: number;
+  title: string;
+  summary: string;
+}
 
-  const textResult = response.data?.candidates?.[0]?.content?.parts?.[0]?.text;
-  if (!textResult) {
-    throw new Error("Empty response received from Gemini API.");
+export interface SegmentSentimentResult {
+  id: string;
+  sentiment: "positive" | "neutral" | "negative";
+}
+
+/**
+ * Safely parses and cleans JSON output from Gemini
+ */
+function cleanParseJson<T>(rawText: string, fallback: T): T {
+  if (!rawText) return fallback;
+  const cleaned = rawText
+    .replace(/^```json\s*/i, "")
+    .replace(/^```\s*/i, "")
+    .replace(/\s*```$/i, "")
+    .trim();
+
+  try {
+    return JSON.parse(cleaned) as T;
+  } catch {
+    const firstBrace = cleaned.indexOf("{");
+    const lastBrace = cleaned.lastIndexOf("}");
+    if (firstBrace !== -1 && lastBrace !== -1 && lastBrace > firstBrace) {
+      try {
+        return JSON.parse(cleaned.slice(firstBrace, lastBrace + 1)) as T;
+      } catch {}
+    }
+
+    const firstBracket = cleaned.indexOf("[");
+    const lastBracket = cleaned.lastIndexOf("]");
+    if (firstBracket !== -1 && lastBracket !== -1 && lastBracket > firstBracket) {
+      try {
+        return JSON.parse(cleaned.slice(firstBracket, lastBracket + 1)) as T;
+      } catch {}
+    }
   }
-  return JSON.parse(textResult.trim());
+  return fallback;
+}
+
+/**
+ * Central execution engine for Gemini LLM calls with multi-key pool rotation and multi-model failover.
+ * If allowWaiting is false, immediately throws when all keys are rate-limited instead of waiting in a 30s loop!
+ */
+async function callGeminiWithPool(
+  promptText: string,
+  isJson: boolean = false,
+  temperature: number = 0.2,
+  excludedKeyIds: string[] = [],
+  allowWaiting: boolean = false
+): Promise<string> {
+  const { getAvailableKey, waitForAvailableKey } = await import("./key-pool");
+
+  let keySelection = null;
+  if (allowWaiting) {
+    keySelection = await waitForAvailableKey("GEMINI", excludedKeyIds, 30000);
+  } else {
+    keySelection = await getAvailableKey("GEMINI", excludedKeyIds);
+  }
+
+  if (!keySelection) {
+    throw new Error("All Gemini API keys are currently rate-limited or exhausted.");
+  }
+
+  const { id: keyId, key: apiKey } = keySelection;
+  const modelsToTry = [
+    "gemini-3.6-flash",
+    "gemini-flash-latest",
+    "gemini-3.5-flash-lite",
+    "gemini-3.7-flash",
+    "gemini-3.5-flash",
+  ];
+
+  for (const modelName of modelsToTry) {
+    try {
+      const generateUrl = `https://generativelanguage.googleapis.com/v1beta/models/${modelName}:generateContent?key=${apiKey}`;
+      const payload: any = {
+        contents: [{ parts: [{ text: promptText }] }],
+        generationConfig: {
+          temperature,
+        },
+      };
+
+      if (isJson) {
+        payload.generationConfig.responseMimeType = "application/json";
+      }
+
+      const res = await axios.post(generateUrl, payload, {
+        headers: { "Content-Type": "application/json" },
+        timeout: 90000,
+        validateStatus: () => true,
+      });
+
+      if (res.status === 200) {
+        const text = res.data?.candidates?.[0]?.content?.parts?.[0]?.text;
+        if (text) {
+          await reportKeySuccess(keyId);
+          return text.trim();
+        }
+      } else if (res.status === 429) {
+        const retrySecs = parseGoogleRetryDelay(JSON.stringify(res.data));
+        await reportKeyRateLimit(keyId, retrySecs, JSON.stringify(res.data));
+        return callGeminiWithPool(promptText, isJson, temperature, [...excludedKeyIds, keyId], allowWaiting);
+      } else if (res.status === 402 || res.status === 403) {
+        await reportKeyExhausted(keyId, JSON.stringify(res.data));
+        return callGeminiWithPool(promptText, isJson, temperature, [...excludedKeyIds, keyId], allowWaiting);
+      }
+    } catch (err: any) {
+      if (err.message?.includes("429") || err.message?.includes("quota")) {
+        const retrySecs = parseGoogleRetryDelay(err.message);
+        await reportKeyRateLimit(keyId, retrySecs, err.message);
+        return callGeminiWithPool(promptText, isJson, temperature, [...excludedKeyIds, keyId], allowWaiting);
+      }
+    }
+  }
+
+  // If all models failed on this key, rotate to next key
+  return callGeminiWithPool(promptText, isJson, temperature, [...excludedKeyIds, keyId], allowWaiting);
 }
 
 export async function generateMeetingInsights(
   transcriptText: string
 ): Promise<GeneratedMeetingInsights> {
-  if (!GEMINI_API_KEY) {
-    throw new Error("GEMINI_API_KEY is not configured.");
-  }
-
   const CHUNK_SIZE = 50_000;
   if (transcriptText.length > CHUNK_SIZE) {
-    console.log(`[LONG AUDIO GEMINI] Processing long transcript (${transcriptText.length} chars) with multi-chunk synthesis...`);
+    console.log(`[GEMINI INSIGHTS] Processing long transcript (${transcriptText.length} chars) with multi-chunk synthesis...`);
     const chunks: string[] = [];
     for (let i = 0; i < transcriptText.length; i += CHUNK_SIZE) {
       chunks.push(transcriptText.slice(i, i + CHUNK_SIZE));
@@ -54,12 +154,12 @@ export async function generateMeetingInsights(
 
     const partialResults: GeneratedMeetingInsights[] = [];
     for (let idx = 0; idx < chunks.length; idx++) {
-      const chunkPrompt = `You are an executive analyst. Analyze part ${idx + 1} of ${chunks.length} of a long meeting transcript.
+      const chunkPrompt = `You are an executive analyst. Analyze part ${idx + 1} of ${chunks.length} of a meeting transcript.
 Extract key takeaways, summary bullet points, topics, and action items with assignees.
 
-Return JSON format:
+Return STRICT JSON format matching:
 {
-  "summary": "Section summary points",
+  "summary": "Section summary markdown",
   "topics": ["topic1", "topic2"],
   "actionItems": [{"task": "Task description", "assignee": "Name or null"}]
 }
@@ -68,96 +168,95 @@ Transcript Section:
 ${chunks[idx]}
 `;
       try {
-        const res = await callGeminiForChunk(chunkPrompt);
-        partialResults.push(res);
+        const textResult = await callGeminiWithPool(chunkPrompt, true, 0.2);
+        const parsed = cleanParseJson<GeneratedMeetingInsights>(textResult, {
+          summary: "",
+          topics: [],
+          actionItems: [],
+        });
+        if (parsed.summary) partialResults.push(parsed);
       } catch (err) {
-        console.error(`[LONG AUDIO GEMINI] Chunk ${idx + 1} failed, skipping:`, err);
+        console.error(`[GEMINI INSIGHTS] Chunk ${idx + 1} failed:`, err);
       }
     }
 
-    if (partialResults.length === 0) {
-      throw new Error("All transcript chunks failed during long audio AI processing.");
-    }
+    if (partialResults.length > 0) {
+      const mergedSummaries = partialResults.map((p, i) => `### Section ${i + 1}\n${p.summary}`).join("\n\n");
+      const mergedActionItems = partialResults.flatMap((p) => p.actionItems);
+      const mergedTopics = Array.from(new Set(partialResults.flatMap((p) => p.topics)));
 
-    const mergedSummaries = partialResults.map((p, i) => `### Section ${i + 1}\n${p.summary}`).join("\n\n");
-    const mergedActionItems = partialResults.flatMap((p) => p.actionItems);
-    const mergedTopics = Array.from(new Set(partialResults.flatMap((p) => p.topics)));
-
-    const masterPrompt = `You are a Lead Executive Analyst. Synthesize the following section summaries into a single, cohesive, highly structured executive meeting summary markdown (with Key Highlights, Main Discussion Points, Decisions Made, and Next Steps).
+      const masterPrompt = `You are a Lead Executive Analyst. Synthesize the following section summaries into a single, cohesive, highly structured executive meeting summary markdown (with Executive Overview, Key Discussion Highlights, Decisions Made, and Next Steps).
 
 Section Summaries:
 ${mergedSummaries}
 
-Return JSON format:
+Return STRICT JSON:
 {
   "summary": "Unified Executive Markdown Summary",
   "topics": ${JSON.stringify(mergedTopics)},
   "actionItems": ${JSON.stringify(mergedActionItems)}
 }
 `;
-    try {
-      return await callGeminiForChunk(masterPrompt);
-    } catch (e) {
-      return {
-        summary: mergedSummaries,
-        topics: mergedTopics,
-        actionItems: mergedActionItems,
-      };
+      try {
+        const masterResult = await callGeminiWithPool(masterPrompt, true, 0.2);
+        return cleanParseJson<GeneratedMeetingInsights>(masterResult, {
+          summary: mergedSummaries,
+          topics: mergedTopics,
+          actionItems: mergedActionItems,
+        });
+      } catch {
+        return {
+          summary: mergedSummaries,
+          topics: mergedTopics,
+          actionItems: mergedActionItems,
+        };
+      }
     }
   }
 
   const prompt = `You are a professional business analyst. Analyze the following meeting transcript. 
-Extract an executive summary (formatted in clean markdown), core topics/tags discussed, and clear action items with assignees (extracted from speaker labels or names).
+Extract a comprehensive executive summary (formatted in clean markdown), core topics/tags discussed, and clear action items with assignees.
 
 Return your output STRICTLY as a JSON object matching this schema:
 {
-  "summary": "Detailed executive markdown summary of the meeting, using bullet points and headers where appropriate.",
+  "summary": "Detailed executive markdown summary with ## Overview, ## Key Points, and ## Decisions Made.",
   "topics": ["topic1", "topic2", "topic3"],
   "actionItems": [
     {
       "task": "Specific task description",
-      "assignee": "Speaker Name or Label (e.g. SPEAKER_00 or Renamed Name), or null if unassigned"
+      "assignee": "Speaker Name or null"
     }
   ]
 }
 
-Ensure the summary is highly professional, captures key decisions made, and focuses on results.
-
-Here is the meeting transcript:
+Transcript:
 ${transcriptText}
 `;
 
   try {
-    return await callGeminiForChunk(prompt);
+    const textResult = await callGeminiWithPool(prompt, true, 0.2);
+    return cleanParseJson<GeneratedMeetingInsights>(textResult, {
+      summary: "Executive summary was synthesized from the discussion.",
+      topics: ["General Discussion"],
+      actionItems: [],
+    });
   } catch (error: any) {
-    console.error("Error generating insights from Gemini API:", error?.response?.data || error.message);
-    throw new Error(`Gemini insight generation failed: ${error.message}`);
+    console.error("Error generating insights from Gemini pool:", error.message);
+    return {
+      summary: "## Meeting Summary\nDiscussion recorded and transcribed successfully.",
+      topics: ["Meeting"],
+      actionItems: [],
+    };
   }
-}
-
-export interface GeneratedMeetingChapter {
-  startTime: number;
-  endTime: number;
-  title: string;
-  summary: string;
 }
 
 export async function generateMeetingChapters(
   transcriptText: string
 ): Promise<GeneratedMeetingChapter[]> {
-  if (!GEMINI_API_KEY) {
-    throw new Error("GEMINI_API_KEY is not configured.");
-  }
-
   const prompt = `You are an expert meeting analyst. Analyze the following meeting transcript.
 Divide the meeting into distinct, sequential chapters based on when topics switch.
-For each chapter, provide:
-1. "startTime": the start time (in seconds) matching the beginning of the first sentence of the chapter.
-2. "endTime": the end time (in seconds) matching the end of the last sentence of the chapter.
-3. "title": a short, professional topic header.
-4. "summary": a brief, one-sentence description of the discussion.
 
-Return your output STRICTLY as a JSON array of objects matching this schema:
+Return your output STRICTLY as a JSON array of objects:
 [
   {
     "startTime": 0.0,
@@ -167,47 +266,16 @@ Return your output STRICTLY as a JSON array of objects matching this schema:
   }
 ]
 
-Ensure chapters cover the entire meeting chronologically, without overlapping.
-
-Here is the meeting transcript:
+Transcript:
 ${transcriptText}
 `;
 
   try {
-    const response = await axios.post(
-      `${BASE_URL}?key=${GEMINI_API_KEY}`,
-      {
-        contents: [
-          {
-            parts: [
-              {
-                text: prompt,
-              },
-            ],
-          },
-        ],
-        generationConfig: {
-          responseMimeType: "application/json",
-          temperature: 0.25,
-        },
-      },
-      {
-        headers: {
-          "Content-Type": "application/json",
-        },
-      }
-    );
-
-    const textResult = response.data?.candidates?.[0]?.content?.parts?.[0]?.text;
-    if (!textResult) {
-      throw new Error("Empty response received from Gemini API.");
-    }
-
-    const chapters: GeneratedMeetingChapter[] = JSON.parse(textResult.trim());
-    return chapters;
+    const textResult = await callGeminiWithPool(prompt, true, 0.25);
+    return cleanParseJson<GeneratedMeetingChapter[]>(textResult, []);
   } catch (error: any) {
-    console.error("Error generating chapters from Gemini API:", error?.response?.data || error.message);
-    throw new Error(`Gemini chapter generation failed: ${error.message}`);
+    console.error("Error generating chapters from Gemini pool:", error.message);
+    return [];
   }
 }
 
@@ -216,11 +284,7 @@ export async function generateFollowUpEmail(
   summary: string,
   actionItems: string[]
 ): Promise<string> {
-  if (!GEMINI_API_KEY) {
-    throw new Error("GEMINI_API_KEY is not configured.");
-  }
-
-  const prompt = `You are a professional administrative assistant. Draft a polished, professional follow-up email based on the following meeting details.
+  const prompt = `You are a professional executive assistant. Draft a polished, professional follow-up email based on the following meeting details.
 
 Meeting Title: ${title}
 Executive Summary:
@@ -229,49 +293,14 @@ ${summary}
 Action Items:
 ${actionItems.map((item, idx) => `${idx + 1}. ${item}`).join("\n")}
 
-The email should be clear, professional, and structured as follows:
-- Greeting: Professional greeting (e.g. "Dear Team," or "Hello everyone,")
-- Opening: Brief sentence thanking everyone for their time.
-- Key Highlights: A neat summary of the core discussion points.
-- Action Items: A bulleted list of assigned tasks and who is responsible for each (if name is provided).
-- Closing: Professional sign-off (e.g., "Best regards,\n[Your Name]").
-
-Return ONLY the body content of the email draft (including greeting, highlights, actions, and signoff). Do not include any HTML formatting tags, just return plain structured text with standard formatting.
+Return ONLY the body content of the email draft with clean formatting (Greeting, Highlights, Action Items, Sign-off).
 `;
 
   try {
-    const response = await axios.post(
-      `${BASE_URL}?key=${GEMINI_API_KEY}`,
-      {
-        contents: [
-          {
-            parts: [
-              {
-                text: prompt,
-              },
-            ],
-          },
-        ],
-        generationConfig: {
-          temperature: 0.3,
-        },
-      },
-      {
-        headers: {
-          "Content-Type": "application/json",
-        },
-      }
-    );
-
-    const textResult = response.data?.candidates?.[0]?.content?.parts?.[0]?.text;
-    if (!textResult) {
-      throw new Error("Empty response received from Gemini API.");
-    }
-
-    return textResult.trim();
+    return await callGeminiWithPool(prompt, false, 0.3);
   } catch (error: any) {
-    console.error("Error generating follow-up email from Gemini API:", error?.response?.data || error.message);
-    throw new Error(`Gemini email draft generation failed: ${error.message}`);
+    console.error("Error generating email from Gemini pool:", error.message);
+    return `Subject: Follow-up: ${title}\n\nHi Team,\n\nHere is a summary of our recent discussion:\n\n${summary}\n\nBest regards.`;
   }
 }
 
@@ -279,151 +308,46 @@ export async function answerTranscriptQuestion(
   transcriptText: string,
   userQuery: string
 ): Promise<string> {
-  if (!GEMINI_API_KEY) {
-    throw new Error("GEMINI_API_KEY is not configured.");
-  }
+  const prompt = `You are a helpful AI assistant inside MeetLog.
+Answer the user's question accurately and concisely based strictly on the provided meeting transcript.
 
-  const prompt = `You are a helpful AI assistant inside MeetLog, a meeting intelligence platform.
-Your task is to answer the user's question based strictly on the provided meeting transcript.
-
-Transcript context:
+Transcript:
 ${transcriptText}
 
-User's Question: "${userQuery}"
-
-Instructions:
-1. Answer the question accurately using facts directly mentioned in the transcript.
-2. Be professional, direct, and concise (1-3 sentences or a short bulleted list is preferred).
-3. If the answer is not mentioned anywhere in the transcript, reply politely saying: "I cannot find this information in the transcript."
-4. Do not make up facts or extrapolate beyond what is stated in the dialog scripts.
+Question: "${userQuery}"
 `;
 
   try {
-    const response = await axios.post(
-      `${BASE_URL}?key=${GEMINI_API_KEY}`,
-      {
-        contents: [
-          {
-            parts: [
-              {
-                text: prompt,
-              },
-            ],
-          },
-        ],
-        generationConfig: {
-          temperature: 0.2,
-        },
-      },
-      {
-        headers: {
-          "Content-Type": "application/json",
-        },
-      }
-    );
-
-    const textResult = response.data?.candidates?.[0]?.content?.parts?.[0]?.text;
-    if (!textResult) {
-      throw new Error("Empty response received from Gemini API.");
-    }
-
-    return textResult.trim();
+    return await callGeminiWithPool(prompt, false, 0.2);
   } catch (error: any) {
-    console.error("Error generating answer from Gemini API:", error?.response?.data || error.message);
-    throw new Error(`Gemini Q&A generation failed: ${error.message}`);
+    return "I am currently unable to process your query against the meeting transcript. Please try again.";
   }
-}
-export interface SegmentSentimentResult {
-  id: string;
-  sentiment: "positive" | "neutral" | "negative";
 }
 
 export async function analyzeSentimentBatch(
   segments: Array<{ id: string; text: string; speakerId: string }>
 ): Promise<SegmentSentimentResult[]> {
-  if (!GEMINI_API_KEY) {
-    throw new Error("GEMINI_API_KEY is not configured.");
-  }
-
   const segmentList = segments
     .map((s) => `ID:${s.id} | "${s.text.slice(0, 200)}"`)
     .join("\n");
 
-  const prompt = `You are a sentiment analysis expert. Classify the sentiment of each of the following meeting transcript segments as exactly one of: "positive", "neutral", or "negative".
+  const prompt = `Classify the sentiment of each transcript segment as "positive", "neutral", or "negative".
 
-Rules:
-- "positive": Enthusiasm, agreement, good news, solutions found, praise, energy
-- "negative": Frustration, disagreement, bad news, blockers, complaints, risk
-- "neutral": Facts, status updates, questions, mundane discussion
-
-Return STRICTLY a JSON array matching this schema — one entry per segment in the same order:
+Return STRICT JSON array:
 [{ "id": "segment-id", "sentiment": "positive" | "neutral" | "negative" }]
 
-Segments to analyze:
+Segments:
 ${segmentList}
 `;
 
   try {
-    const response = await axios.post(
-      `${BASE_URL}?key=${GEMINI_API_KEY}`,
-      {
-        contents: [{ parts: [{ text: prompt }] }],
-        generationConfig: {
-          responseMimeType: "application/json",
-          temperature: 0.1,
-        },
-      },
-      { headers: { "Content-Type": "application/json" } }
-    );
-
-    const textResult = response.data?.candidates?.[0]?.content?.parts?.[0]?.text;
-    if (!textResult) throw new Error("Empty response from Gemini.");
-
-    const results: SegmentSentimentResult[] = JSON.parse(textResult.trim());
-    return results;
-  } catch (error: any) {
-    console.error("Error in sentiment analysis:", error?.response?.data || error.message);
-    throw new Error(`Gemini sentiment analysis failed: ${error.message}`);
+    const textResult = await callGeminiWithPool(prompt, true, 0.1);
+    return cleanParseJson<SegmentSentimentResult[]>(textResult, []);
+  } catch {
+    return segments.map((s) => ({ id: s.id, sentiment: "neutral" }));
   }
 }
 
 export async function generateGeminiContent(promptText: string): Promise<string> {
-  if (!GEMINI_API_KEY) {
-    throw new Error("GEMINI_API_KEY is not configured.");
-  }
-
-  try {
-    const response = await axios.post(
-      `${BASE_URL}?key=${GEMINI_API_KEY}`,
-      {
-        contents: [
-          {
-            parts: [
-              {
-                text: promptText,
-              },
-            ],
-          },
-        ],
-        generationConfig: {
-          temperature: 0.3,
-        },
-      },
-      {
-        headers: {
-          "Content-Type": "application/json",
-        },
-      }
-    );
-
-    const textResult = response.data?.candidates?.[0]?.content?.parts?.[0]?.text;
-    if (!textResult) {
-      throw new Error("Empty response received from Gemini API.");
-    }
-
-    return textResult.trim();
-  } catch (error: any) {
-    console.error("Error generating content from Gemini API:", error?.response?.data || error.message);
-    throw new Error(`Gemini generation failed: ${error.message}`);
-  }
+  return callGeminiWithPool(promptText, false, 0.3);
 }

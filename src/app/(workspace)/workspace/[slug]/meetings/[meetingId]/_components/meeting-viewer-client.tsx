@@ -8,7 +8,7 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
-import { renameSpeakerAction, editSegmentAction, toggleActionItemAction, draftMeetingEmailAction, toggleMeetingPublicAction, askMeetingAIAction, updateSegmentAnnotationAction, analyzeMeetingSentimentAction, pingUserPresenceAction, syncMeetingDurationAction } from "../actions";
+import { renameSpeakerAction, editSegmentAction, toggleActionItemAction, draftMeetingEmailAction, toggleMeetingPublicAction, askMeetingAIAction, updateSegmentAnnotationAction, analyzeMeetingSentimentAction, pingUserPresenceAction, syncMeetingDurationAction, retranscribeMeetingAction, generateSummaryAction } from "../actions";
 import { exportToSlackAction, exportToJiraAction, exportToLinearAction } from "../export-actions";
 import { AudioSnippetClipperModal } from "@/components/meetings/audio-snippet-clipper";
 import { MeetingExportModal } from "@/components/meetings/meeting-export-modal";
@@ -399,11 +399,65 @@ export function MeetingViewerClient({
   }, [segments]);
 
   const initialDuration = useMemo(() => {
+    if (meeting.durationSeconds && meeting.durationSeconds > 0) return meeting.durationSeconds;
     if (maxSegmentDuration > 0) return maxSegmentDuration;
-    return meeting.durationSeconds || 0;
+    return 0;
   }, [maxSegmentDuration, meeting.durationSeconds]);
 
   const [audioDuration, setAudioDuration] = useState(initialDuration);
+  const [playbackSpeed, setPlaybackSpeed] = useState(1);
+  const [isRetranscribing, setIsRetranscribing] = useState(false);
+
+  const togglePlaybackSpeed = () => {
+    const speeds = [1, 1.25, 1.5, 2, 0.75];
+    const nextIndex = (speeds.indexOf(playbackSpeed) + 1) % speeds.length;
+    const nextSpeed = speeds[nextIndex];
+    setPlaybackSpeed(nextSpeed);
+    if (audioRef.current) {
+      audioRef.current.playbackRate = nextSpeed;
+    }
+  };
+
+  const handleRetranscribe = async () => {
+    if (isRetranscribing) return;
+    const confirmed = window.confirm(
+      "Are you sure you want to regenerate the transcript? This will transcribe the audio in 2-minute high-precision chunks to extract all lines and calibrate timestamps."
+    );
+    if (!confirmed) return;
+
+    setIsRetranscribing(true);
+    try {
+      const res = await retranscribeMeetingAction(meeting.id, workspaceSlug, "GEMINI");
+      if (res.success) {
+        window.location.reload();
+      } else {
+        alert(res.error || "Failed to start re-transcription.");
+        setIsRetranscribing(false);
+      }
+    } catch (e: any) {
+      alert(e.message || "Failed to start re-transcription.");
+      setIsRetranscribing(false);
+    }
+  };
+
+  const [isGeneratingSummary, setIsGeneratingSummary] = useState(false);
+
+  const handleGenerateSummary = async () => {
+    if (isGeneratingSummary) return;
+    setIsGeneratingSummary(true);
+    try {
+      const res = await generateSummaryAction(meeting.id, workspaceSlug);
+      if (res.success) {
+        window.location.reload();
+      } else {
+        alert(res.error || "Failed to generate summary. Please verify active Gemini API keys.");
+        setIsGeneratingSummary(false);
+      }
+    } catch (e: any) {
+      alert(e.message || "Failed to generate summary.");
+      setIsGeneratingSummary(false);
+    }
+  };
 
   useEffect(() => {
     const params = new URLSearchParams(window.location.search);
@@ -1040,16 +1094,37 @@ export function MeetingViewerClient({
           </form>
         </TabsContent>
 
-        {}
+        {/* SUMMARY TAB */}
         <TabsContent value="summary" className="flex-1 overflow-y-auto p-5 focus-visible:ring-0 m-0 space-y-4">
-          {}
-          {!isReadOnly && meeting.summaryMarkdown && (
-            <Button
-              onClick={handleDraftEmail}
-              className="w-full flex items-center justify-center gap-2 bg-primary/10 text-primary border border-primary/20 hover:bg-primary hover:text-primary-foreground transition-all h-9 text-sm font-semibold rounded-lg cursor-pointer"
-            >
-              <Mail className="size-3.5" /> Draft Follow-up Email
-            </Button>
+          {!isReadOnly && (
+            <div className="flex items-center gap-2">
+              {meeting.summaryMarkdown && !meeting.summaryMarkdown.includes("Note") && (
+                <Button
+                  onClick={handleDraftEmail}
+                  className="flex-1 flex items-center justify-center gap-2 bg-primary/10 text-primary border border-primary/20 hover:bg-primary hover:text-primary-foreground transition-all h-9 text-sm font-semibold rounded-lg cursor-pointer"
+                >
+                  <Mail className="size-3.5" /> Draft Follow-up Email
+                </Button>
+              )}
+              <Button
+                onClick={handleGenerateSummary}
+                disabled={isGeneratingSummary}
+                variant="outline"
+                className={`flex items-center justify-center gap-2 h-9 text-xs font-semibold rounded-lg cursor-pointer transition-all ${
+                  !meeting.summaryMarkdown || meeting.summaryMarkdown.includes("Note")
+                    ? "w-full bg-primary text-primary-foreground hover:bg-primary/90"
+                    : "hover:border-primary/40 hover:bg-primary/5"
+                }`}
+                title="Generate or update AI executive summary"
+              >
+                {isGeneratingSummary ? (
+                  <Loader2 className="size-3.5 animate-spin" />
+                ) : (
+                  <Sparkles className="size-3.5" />
+                )}
+                <span>{isGeneratingSummary ? "Generating AI Summary..." : (!meeting.summaryMarkdown || meeting.summaryMarkdown.includes("Note") ? "Generate AI Summary" : "Regenerate")}</span>
+              </Button>
+            </div>
           )}
           <div className="prose prose-sm dark:prose-invert max-w-none text-foreground/90">
             {meeting.summaryMarkdown ? (
@@ -1071,7 +1146,18 @@ export function MeetingViewerClient({
                 </ReactMarkdown>
               </div>
             ) : (
-              <p className="text-[15px] text-muted-foreground">No executive summary generated.</p>
+              <div className="flex flex-col items-center justify-center py-10 text-center space-y-3">
+                <p className="text-[14px] text-muted-foreground">Executive summary has not been generated yet.</p>
+                <Button
+                  onClick={handleGenerateSummary}
+                  disabled={isGeneratingSummary}
+                  size="sm"
+                  className="cursor-pointer gap-2"
+                >
+                  {isGeneratingSummary ? <Loader2 className="size-3.5 animate-spin" /> : <Sparkles className="size-3.5" />}
+                  Generate AI Summary
+                </Button>
+              </div>
             )}
           </div>
         </TabsContent>
@@ -1502,6 +1588,24 @@ export function MeetingViewerClient({
 
               {}
               {!isReadOnly && (
+                <Button
+                  onClick={handleRetranscribe}
+                  disabled={isRetranscribing}
+                  variant="outline"
+                  size="sm"
+                  className="h-8 text-xs flex items-center gap-1.5 cursor-pointer bg-card px-2.5 border-border hover:border-primary/50 hover:bg-primary/5 transition-all text-foreground"
+                  title="Regenerate full transcript with 2-minute high-precision chunks"
+                >
+                  {isRetranscribing ? (
+                    <Loader2 className="size-3.5 animate-spin text-primary" />
+                  ) : (
+                    <Sparkles className="size-3.5 text-primary" />
+                  )}
+                  <span className="hidden sm:inline font-medium">Re-transcribe</span>
+                </Button>
+              )}
+
+              {!isReadOnly && (
                 <div className="relative">
                   <Button
                     onClick={() => setShowShareMenu(!showShareMenu)}
@@ -1700,14 +1804,14 @@ export function MeetingViewerClient({
                 : seg.highlightColor === "green" ? "bg-emerald-500/10 border-emerald-500/35 ring-emerald-500/10 border-l-4 border-l-emerald-500"
                 : seg.highlightColor === "blue" ? "bg-sky-500/10 border-sky-500/35 ring-sky-500/10 border-l-4 border-l-sky-500"
                 : isActive
-                ? "border-primary/50 bg-primary/8 shadow-xs ring-1 ring-primary/20 border-l-4 border-l-primary"
-                : "border-transparent hover:bg-muted/30";
+                ? "border-primary/50 bg-primary/10 shadow-[0_0_24px_rgba(59,130,246,0.12)] ring-1 ring-primary/30 border-l-4 border-l-primary scale-[1.008]"
+                : "border-transparent hover:bg-card/70 hover:border-border/50";
 
               return (
                 <div
                   key={seg.id}
                   id={`segment-${seg.id}`}
-                  className={`group flex items-start gap-4 rounded-xl p-3 border transition-all ${highlightClasses}`}
+                  className={`group flex items-start gap-4 rounded-xl p-3 border transition-all duration-200 ${highlightClasses}`}
                 >
                   {}
                   <button
@@ -2158,8 +2262,19 @@ export function MeetingViewerClient({
           </span>
         </div>
 
-        {}
-        <VolumeControl ref={volumeControlRef} audioRef={audioRef} initialVolume={0.8} />
+        {/* Playback Speed & Volume */}
+        <div className="flex items-center gap-2 shrink-0">
+          <Button
+            onClick={togglePlaybackSpeed}
+            variant="outline"
+            size="sm"
+            className="h-8 px-2 text-xs font-mono font-bold rounded-lg border-border bg-card hover:bg-muted text-foreground cursor-pointer transition-all shrink-0"
+            title="Change Playback Speed (1x, 1.25x, 1.5x, 2x, 0.75x)"
+          >
+            {playbackSpeed}x
+          </Button>
+          <VolumeControl ref={volumeControlRef} audioRef={audioRef} initialVolume={0.8} />
+        </div>
 
       </footer>
 

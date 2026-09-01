@@ -7,6 +7,9 @@ import { MeetingViewerClient } from "./_components/meeting-viewer-client";
 import { ProcessingPlaceholder } from "./_components/processing-placeholder";
 import { FailedMeetingView } from "./_components/failed-meeting-view";
 
+export const dynamic = "force-dynamic";
+export const revalidate = 0;
+
 interface MeetingPageProps {
   params: Promise<{ slug: string; meetingId: string }>;
 }
@@ -90,15 +93,9 @@ export default async function MeetingPage({ params }: MeetingPageProps) {
     speakerMap[label.speakerId] = label.displayName;
   });
 
-  const maxSegmentEnd = meeting.segments.reduce((max, s) => Math.max(max, s.endTime || 0), 0);
-  const effectiveDuration = maxSegmentEnd > 0 ? Math.round(maxSegmentEnd) : (meeting.durationSeconds || 0);
-
-  if (maxSegmentEnd > 0 && Math.abs((meeting.durationSeconds || 0) - maxSegmentEnd) > 15) {
-    prisma.meeting.update({
-      where: { id: meeting.id },
-      data: { durationSeconds: Math.round(maxSegmentEnd) },
-    }).catch(console.error);
-  }
+  const effectiveDuration = meeting.durationSeconds && meeting.durationSeconds > 0
+    ? meeting.durationSeconds
+    : (meeting.segments.reduce((max, s) => Math.max(max, s.endTime || 0), 0) || 0);
 
   return (
     <div className="flex flex-1 flex-col overflow-hidden">

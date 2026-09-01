@@ -402,6 +402,21 @@ export async function getBoomlifyCreditStatsAction(workspaceSlug: string) {
   }
 }
 
+export async function resetAllRateLimitsAction(workspaceSlug: string) {
+  try {
+    const user = await requireUser();
+    await verifyWorkspaceAccess(workspaceSlug, user.id);
+
+    const { resetAllRateLimitedKeys } = await import("@/lib/key-pool");
+    const count = await resetAllRateLimitedKeys();
+
+    return { success: true, count };
+  } catch (error: any) {
+    console.error("[RESET RATE LIMITS ERROR]", error);
+    return { success: false, error: error.message || "Failed to reset rate limits." };
+  }
+}
+
 function maskApiKey(key: string): string {
   if (!key || key.length <= 8) return "••••••••";
   const start = key.slice(0, 4);

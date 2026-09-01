@@ -9,6 +9,22 @@ export interface KeyPoolSelection {
   isFallbackEnv?: boolean;
 }
 
+const inMemoryKeyCooldowns = new Map<string, number>();
+
+export function isKeyInCooldown(keyId: string): boolean {
+  const resetTimestamp = inMemoryKeyCooldowns.get(keyId);
+  if (!resetTimestamp) return false;
+  if (Date.now() >= resetTimestamp) {
+    inMemoryKeyCooldowns.delete(keyId);
+    return false;
+  }
+  return true;
+}
+
+export function markKeyCooldown(keyId: string, seconds: number) {
+  inMemoryKeyCooldowns.set(keyId, Date.now() + Math.max(10, seconds) * 1000);
+}
+
 export function parseGoogleRetryDelay(errorMsg: string): number {
   const match =
     String(errorMsg).match(/retry in\s*([\d\.]+)\s*s/i) ||
@@ -57,14 +73,15 @@ export async function getAvailableKey(
         { lastUsedAt: "asc" },
         { usageCount: "asc" },
       ],
-      take: 5,
+      take: 10,
     });
 
-    if (candidates.length > 0) {
-      const selected = candidates[0];
+    // Filter out any key currently in local memory cooldown
+    const validCandidate = candidates.find((c) => !isKeyInCooldown(c.id));
+    if (validCandidate) {
       return {
-        id: selected.id,
-        key: selected.key,
+        id: validCandidate.id,
+        key: validCandidate.key,
         provider,
         isFallbackEnv: false,
       };
@@ -73,13 +90,14 @@ export async function getAvailableKey(
     console.error(`[KEY POOL ERROR] Failed to fetch database key for provider ${provider}:`, error);
   }
 
-  // 3. Fallback to process.env key if available and not excluded
+  // 3. Fallback to process.env key if available, not excluded, and not in cooldown
   const envKeyName = getEnvVarNameForProvider(provider);
   const envKeyVal = process.env[envKeyName];
+  const envId = `env-${provider}`;
 
-  if (envKeyVal && !excludedKeyIds.includes(`env-${provider}`)) {
+  if (envKeyVal && !excludedKeyIds.includes(envId) && !isKeyInCooldown(envId)) {
     return {
-      id: `env-${provider}`,
+      id: envId,
       key: envKeyVal,
       provider,
       isFallbackEnv: true,
@@ -101,7 +119,7 @@ export async function waitForAvailableKey(
   const immediate = await getAvailableKey(provider, excludedKeyIds);
   if (immediate) return immediate;
 
-  // If no immediate key, find the earliest resetting key
+  // If no immediate key, find the earliest resetting database key
   try {
     const earliest = await prisma.apiKeyPool.findFirst({
       where: {
@@ -144,11 +162,13 @@ export async function waitForAvailableKey(
     console.warn(`[KEY POOL] Error in waitForAvailableKey:`, err.message);
   }
 
-  // Final check without excluded IDs if everything was excluded
+  // Clear in-memory cooldowns if all options exhausted
+  inMemoryKeyCooldowns.clear();
   return getAvailableKey(provider, []);
 }
 
 export async function reportKeySuccess(keyId: string): Promise<void> {
+  inMemoryKeyCooldowns.delete(keyId);
   if (!keyId || keyId.startsWith("env-")) return;
 
   try {
@@ -171,9 +191,15 @@ export async function reportKeyRateLimit(
   resetInSeconds: number = 60,
   errorMessage?: string
 ): Promise<void> {
-  if (!keyId || keyId.startsWith("env-")) return;
+  const actualSeconds = Math.max(10, resetInSeconds);
+  markKeyCooldown(keyId, actualSeconds);
 
-  const resetAt = new Date(Date.now() + Math.max(10, resetInSeconds) * 1000);
+  if (!keyId || keyId.startsWith("env-")) {
+    console.warn(`[KEY POOL] Fallback key ${keyId} placed in cooldown for ${actualSeconds}s`);
+    return;
+  }
+
+  const resetAt = new Date(Date.now() + actualSeconds * 1000);
 
   try {
     await prisma.apiKeyPool.update({
@@ -195,6 +221,8 @@ export async function reportKeyExhausted(
   keyId: string,
   errorMessage?: string
 ): Promise<void> {
+  markKeyCooldown(keyId, 86400);
+
   if (!keyId || keyId.startsWith("env-")) return;
 
   try {
@@ -209,6 +237,26 @@ export async function reportKeyExhausted(
     console.error(`[KEY POOL] Key ${keyId} marked as EXHAUSTED: ${errorMessage}`);
   } catch (error) {
     console.error(`[KEY POOL ERROR] Failed to mark key exhausted for ${keyId}:`, error);
+  }
+}
+
+export async function resetAllRateLimitedKeys(provider?: ApiProvider): Promise<number> {
+  inMemoryKeyCooldowns.clear();
+  try {
+    const res = await prisma.apiKeyPool.updateMany({
+      where: {
+        ...(provider ? { provider } : {}),
+        status: "RATE_LIMITED",
+      },
+      data: {
+        status: "ACTIVE",
+        rateLimitResetAt: null,
+      },
+    });
+    return res.count;
+  } catch (err: any) {
+    console.error("[KEY POOL] Failed to reset rate-limited keys:", err);
+    return 0;
   }
 }
 
@@ -242,6 +290,7 @@ export async function addPoolKey(data: {
   key: string;
   label?: string;
 }) {
+  inMemoryKeyCooldowns.clear();
   return await prisma.apiKeyPool.create({
     data: {
       provider: data.provider,
@@ -253,12 +302,16 @@ export async function addPoolKey(data: {
 }
 
 export async function deletePoolKey(id: string) {
+  inMemoryKeyCooldowns.delete(id);
   return await prisma.apiKeyPool.delete({
     where: { id },
   });
 }
 
 export async function togglePoolKeyStatus(id: string, status: "ACTIVE" | "DISABLED") {
+  if (status === "ACTIVE") {
+    inMemoryKeyCooldowns.delete(id);
+  }
   return await prisma.apiKeyPool.update({
     where: { id },
     data: {
