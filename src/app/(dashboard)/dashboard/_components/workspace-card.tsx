@@ -38,68 +38,68 @@ export function WorkspaceCard({ workspace }: WorkspaceCardProps) {
     .slice(0, 2);
 
   return (
-    <motion.div variants={fadeUpVariants}>
+    <motion.div variants={fadeUpVariants} className="h-full flex flex-col">
       <Link
         href={`/workspace/${workspace.slug}`}
         className={cn(
-          "group flex flex-col gap-4 rounded-xl border border-border bg-card p-5",
-          "transition-all duration-200 hover:border-primary/40 hover:shadow-md hover:shadow-primary/5",
+          "group flex flex-col justify-between h-full rounded-2xl border border-border bg-card p-5",
+          "transition-all duration-200 hover:border-primary/40 hover:shadow-lg hover:shadow-primary/5 hover:-translate-y-0.5",
           "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary/40",
         )}
       >
-        {}
-        <div className="flex items-start justify-between gap-3">
-          {}
-          <div className="flex size-11 shrink-0 items-center justify-center rounded-xl bg-primary/10 text-sm font-bold text-primary ring-1 ring-primary/20">
-            {workspace.logo ? (
-              // eslint-disable-next-line @next/next/no-img-element
-              <img
-                src={workspace.logo}
-                alt={workspace.name}
-                className="size-full rounded-xl object-cover"
-              />
-            ) : (
-              initials
-            )}
+        <div className="flex flex-col gap-4">
+          {/* Header */}
+          <div className="flex items-start justify-between gap-3">
+            <div className="flex size-11 shrink-0 items-center justify-center rounded-xl bg-primary/10 text-sm font-bold text-primary ring-1 ring-primary/20">
+              {workspace.logo ? (
+                // eslint-disable-next-line @next/next/no-img-element
+                <img
+                  src={workspace.logo}
+                  alt={workspace.name}
+                  className="size-full rounded-xl object-cover"
+                />
+              ) : (
+                initials
+              )}
+            </div>
+
+            <Badge
+              variant="outline"
+              className={cn("flex items-center gap-1 text-[11px] font-medium", roleCfg.color, "border-current/20")}
+            >
+              <RoleIcon className="size-3" />
+              {roleCfg.label}
+            </Badge>
           </div>
 
-          {}
-          <Badge
-            variant="outline"
-            className={cn("flex items-center gap-1 text-[11px] font-medium", roleCfg.color, "border-current/20")}
-          >
-            <RoleIcon className="size-3" />
-            {roleCfg.label}
-          </Badge>
+          {/* Title & Slug */}
+          <div className="flex flex-col gap-1 min-w-0">
+            <h3 className="text-base font-bold text-foreground group-hover:text-primary transition-colors truncate">
+              {workspace.name}
+            </h3>
+            <p className="font-mono text-xs text-muted-foreground truncate" title={`meetlog.app/workspace/${workspace.slug}`}>
+              meetlog.app/workspace/{workspace.slug}
+            </p>
+          </div>
+
+          {/* Stats */}
+          <div className="flex items-center gap-4 text-xs font-medium text-muted-foreground">
+            <span className="flex items-center gap-1.5">
+              <Users className="size-3.5 text-primary/70" />
+              {workspace.memberCount} {workspace.memberCount === 1 ? "member" : "members"}
+            </span>
+            <span className="flex items-center gap-1.5">
+              <FolderKanban className="size-3.5 text-primary/70" />
+              {workspace.meetingCount} {workspace.meetingCount === 1 ? "meeting" : "meetings"}
+            </span>
+          </div>
         </div>
 
-        {}
-        <div className="flex flex-col gap-0.5">
-          <h3 className="text-base font-semibold text-foreground group-hover:text-primary transition-colors line-clamp-1">
-            {workspace.name}
-          </h3>
-          <p className="font-mono text-sm text-muted-foreground">
-            meetlog.app/workspace/{workspace.slug}
-          </p>
-        </div>
-
-        {}
-        <div className="flex items-center gap-4 text-sm text-muted-foreground">
-          <span className="flex items-center gap-1.5">
-            <Users className="size-3.5" />
-            {workspace.memberCount} {workspace.memberCount === 1 ? "member" : "members"}
-          </span>
-          <span className="flex items-center gap-1.5">
-            <FolderKanban className="size-3.5" />
-            {workspace.meetingCount} {workspace.meetingCount === 1 ? "meeting" : "meetings"}
-          </span>
-        </div>
-
-        {}
-        <div className="flex items-center justify-end">
-          <span className="flex items-center gap-1 text-sm font-medium text-muted-foreground transition-colors group-hover:text-primary">
+        {/* Footer Link (Anchored to bottom across all cards) */}
+        <div className="flex items-center justify-end pt-3 mt-4 border-t border-border/40">
+          <span className="flex items-center gap-1 text-xs font-semibold text-muted-foreground transition-colors group-hover:text-primary">
             Open workspace
-            <ArrowRight className="size-3.5 transition-transform group-hover:translate-x-0.5" />
+            <ArrowRight className="size-3.5 transition-transform group-hover:translate-x-1" />
           </span>
         </div>
       </Link>
