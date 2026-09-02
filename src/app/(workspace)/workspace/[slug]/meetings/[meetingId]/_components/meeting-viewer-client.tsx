@@ -394,7 +394,17 @@ export function MeetingViewerClient({
   const [isBuffering, setIsBuffering] = useState(false);
   const [currentTime, setCurrentTime] = useState(0);
 
+  const youtubeVideoId = useMemo(() => {
+    const url = meeting.audioUrl || "";
+    if (url.includes("youtube.com") || url.includes("youtu.be")) {
+      const match = url.match(/(?:youtu\.be\/|youtube\.com\/(?:embed\/|v\/|watch\?v=|watch\?.+&v=|shorts\/))([\w-]{11})/);
+      return match ? match[1] : null;
+    }
+    return null;
+  }, [meeting.audioUrl]);
+
   const isVideoMedia = useMemo(() => {
+    if (youtubeVideoId) return true;
     const combined = `${meeting.audioUrl || ""} ${meeting.title || ""}`.toLowerCase();
     return (
       combined.includes(".mp4") ||
@@ -406,9 +416,44 @@ export function MeetingViewerClient({
       combined.includes(".m4v") ||
       combined.includes("video")
     );
-  }, [meeting.audioUrl, meeting.title]);
+  }, [youtubeVideoId, meeting.audioUrl, meeting.title]);
 
   const [showVideo, setShowVideo] = useState(true);
+
+  const sendYouTubeCommand = (func: string, args: any[] = []) => {
+    const iframe = document.getElementById("yt-studio-player") as HTMLIFrameElement | null;
+    if (iframe?.contentWindow) {
+      iframe.contentWindow.postMessage(
+        JSON.stringify({ event: "command", func, args }),
+        "*"
+      );
+    }
+  };
+
+  useEffect(() => {
+    if (!youtubeVideoId) return;
+
+    const handleWindowMessage = (e: MessageEvent) => {
+      try {
+        const data = typeof e.data === "string" ? JSON.parse(e.data) : e.data;
+        if (data && data.event === "infoDelivery" && data.info) {
+          if (typeof data.info.currentTime === "number") {
+            setCurrentTime(data.info.currentTime);
+          }
+          if (typeof data.info.playerState === "number") {
+            if (data.info.playerState === 1) setIsPlaying(true);
+            else if (data.info.playerState === 2 || data.info.playerState === 0) setIsPlaying(false);
+          }
+          if (typeof data.info.duration === "number" && data.info.duration > 0) {
+            setAudioDuration(data.info.duration);
+          }
+        }
+      } catch {}
+    };
+
+    window.addEventListener("message", handleWindowMessage);
+    return () => window.removeEventListener("message", handleWindowMessage);
+  }, [youtubeVideoId]);
 
   const maxSegmentDuration = useMemo(() => {
     return segments.reduce((max, s) => Math.max(max, s.endTime || 0), 0);
@@ -429,7 +474,9 @@ export function MeetingViewerClient({
     const nextIndex = (speeds.indexOf(playbackSpeed) + 1) % speeds.length;
     const nextSpeed = speeds[nextIndex];
     setPlaybackSpeed(nextSpeed);
-    if (audioRef.current) {
+    if (youtubeVideoId) {
+      sendYouTubeCommand("setPlaybackRate", [nextSpeed]);
+    } else if (audioRef.current) {
       audioRef.current.playbackRate = nextSpeed;
     }
   };
@@ -718,6 +765,16 @@ export function MeetingViewerClient({
   }, [segments, debouncedSearchQuery, speakerMap, selectedSpeakers]);
 
   const togglePlay = () => {
+    if (youtubeVideoId) {
+      if (isPlaying) {
+        sendYouTubeCommand("pauseVideo");
+        setIsPlaying(false);
+      } else {
+        sendYouTubeCommand("playVideo");
+        setIsPlaying(true);
+      }
+      return;
+    }
     if (!audioRef.current) return;
     if (audioRef.current.paused) {
       audioRef.current.play().catch(console.error);
@@ -749,16 +806,26 @@ export function MeetingViewerClient({
   };
 
   const seekTo = (seconds: number) => {
+    setCurrentTime(seconds);
+    if (youtubeVideoId) {
+      sendYouTubeCommand("seekTo", [seconds, true]);
+      return;
+    }
     if (audioRef.current) {
       audioRef.current.currentTime = seconds;
-      setCurrentTime(seconds);
     }
   };
 
   const seekToAndPlay = (seconds: number) => {
+    setCurrentTime(seconds);
+    if (youtubeVideoId) {
+      sendYouTubeCommand("seekTo", [seconds, true]);
+      sendYouTubeCommand("playVideo");
+      setIsPlaying(true);
+      return;
+    }
     if (audioRef.current) {
       audioRef.current.currentTime = seconds;
-      setCurrentTime(seconds);
       if (audioRef.current.paused) {
         audioRef.current.play().catch(console.error);
       }
@@ -766,19 +833,13 @@ export function MeetingViewerClient({
   };
 
   const skipBackward = () => {
-    if (audioRef.current) {
-      const target = Math.max(0, audioRef.current.currentTime - 10);
-      audioRef.current.currentTime = target;
-      setCurrentTime(target);
-    }
+    const target = Math.max(0, currentTime - 10);
+    seekTo(target);
   };
 
   const skipForward = () => {
-    if (audioRef.current) {
-      const target = Math.min(audioDuration, audioRef.current.currentTime + 10);
-      audioRef.current.currentTime = target;
-      setCurrentTime(target);
-    }
+    const target = Math.min(audioDuration, currentTime + 10);
+    seekTo(target);
   };
 
   const handleTimelineChange = (e: React.ChangeEvent<HTMLInputElement>) => {
@@ -1497,8 +1558,8 @@ export function MeetingViewerClient({
   return (
     <div className="flex flex-1 flex-col overflow-hidden bg-background">
       {}
-      {/* Media Player: hidden when video is visible in the studio screen */}
-      {isVideoMedia && showVideo ? null : (
+      {/* Media Player: hidden when video is visible in the studio screen or for YouTube streams */}
+      {youtubeVideoId || (isVideoMedia && showVideo) ? null : (
         <video
           ref={audioRef}
           src={getOptimizedAudioUrl(meeting.audioUrl, meeting.shareToken)}
@@ -1772,51 +1833,71 @@ export function MeetingViewerClient({
             {/* ─── Synchronized Video Studio Screen ─── */}
             {isVideoMedia && showVideo && (
               <div className="mb-6 overflow-hidden rounded-2xl border border-border/80 bg-black/95 shadow-2xl relative group shrink-0">
-                <div className="relative aspect-video max-h-[360px] w-full flex items-center justify-center bg-black/95">
-                  <video
-                    ref={audioRef}
-                    src={getOptimizedAudioUrl(meeting.audioUrl, meeting.shareToken)}
-                    preload="auto"
-                    onTimeUpdate={handleTimeUpdate}
-                    onLoadedMetadata={handleLoadedMetadata}
-                    onPlay={() => setIsPlaying(true)}
-                    onPause={() => setIsPlaying(false)}
-                    onWaiting={() => setIsBuffering(true)}
-                    onPlaying={() => {
-                      setIsBuffering(false);
-                      setIsPlaying(true);
-                    }}
-                    onCanPlay={() => setIsBuffering(false)}
-                    onSeeking={() => setIsBuffering(true)}
-                    onSeeked={() => setIsBuffering(false)}
-                    onEnded={() => {
-                      setIsPlaying(false);
-                      setIsBuffering(false);
-                    }}
-                    crossOrigin="anonymous"
-                    className="w-full h-full object-contain cursor-pointer"
-                    onClick={togglePlay}
-                  />
+                <div className="relative aspect-video max-h-[380px] w-full flex items-center justify-center bg-black/95">
+                  {youtubeVideoId ? (
+                    <iframe
+                      id="yt-studio-player"
+                      src={`https://www.youtube-nocookie.com/embed/${youtubeVideoId}?enablejsapi=1&origin=${typeof window !== "undefined" ? encodeURIComponent(window.location.origin) : ""}&rel=0&modestbranding=1`}
+                      title={meeting.title}
+                      allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture; web-share"
+                      allowFullScreen
+                      className="w-full h-full rounded-2xl border-0"
+                    />
+                  ) : (
+                    <>
+                      <video
+                        ref={audioRef}
+                        src={getOptimizedAudioUrl(meeting.audioUrl, meeting.shareToken)}
+                        preload="auto"
+                        onTimeUpdate={handleTimeUpdate}
+                        onLoadedMetadata={handleLoadedMetadata}
+                        onPlay={() => setIsPlaying(true)}
+                        onPause={() => setIsPlaying(false)}
+                        onWaiting={() => setIsBuffering(true)}
+                        onPlaying={() => {
+                          setIsBuffering(false);
+                          setIsPlaying(true);
+                        }}
+                        onCanPlay={() => setIsBuffering(false)}
+                        onSeeking={() => setIsBuffering(true)}
+                        onSeeked={() => setIsBuffering(false)}
+                        onEnded={() => {
+                          setIsPlaying(false);
+                          setIsBuffering(false);
+                        }}
+                        crossOrigin="anonymous"
+                        className="w-full h-full object-contain cursor-pointer"
+                        onClick={togglePlay}
+                      />
+
+                      {/* Play/Pause Overlay when Paused */}
+                      {!isPlaying && (
+                        <div
+                          onClick={togglePlay}
+                          className="absolute inset-0 flex items-center justify-center bg-black/35 backdrop-blur-[1px] cursor-pointer transition-all hover:bg-black/20"
+                        >
+                          <div className="flex size-14 items-center justify-center rounded-full bg-white/20 text-white backdrop-blur-md border border-white/30 shadow-2xl hover:scale-110 transition-transform">
+                            <Play className="size-6 ml-1 fill-white" />
+                          </div>
+                        </div>
+                      )}
+                    </>
+                  )}
 
                   {/* Badges */}
                   <div className="absolute top-3 left-3 flex items-center gap-2 pointer-events-none">
-                    <span className="px-2.5 py-1 rounded-full bg-black/80 backdrop-blur-md text-[10px] font-bold text-white border border-white/15 flex items-center gap-1.5 shadow-lg">
-                      <span className="size-1.5 rounded-full bg-purple-500 animate-pulse" />
-                      VIDEO RECORDING
-                    </span>
+                    {youtubeVideoId ? (
+                      <span className="px-2.5 py-1 rounded-full bg-red-600/90 backdrop-blur-md text-[10px] font-bold text-white border border-red-400/30 flex items-center gap-1.5 shadow-lg">
+                        <span className="size-1.5 rounded-full bg-white animate-pulse" />
+                        YOUTUBE STREAM
+                      </span>
+                    ) : (
+                      <span className="px-2.5 py-1 rounded-full bg-black/80 backdrop-blur-md text-[10px] font-bold text-white border border-white/15 flex items-center gap-1.5 shadow-lg">
+                        <span className="size-1.5 rounded-full bg-purple-500 animate-pulse" />
+                        VIDEO RECORDING
+                      </span>
+                    )}
                   </div>
-
-                  {/* Play/Pause Overlay when Paused */}
-                  {!isPlaying && (
-                    <div
-                      onClick={togglePlay}
-                      className="absolute inset-0 flex items-center justify-center bg-black/35 backdrop-blur-[1px] cursor-pointer transition-all hover:bg-black/20"
-                    >
-                      <div className="flex size-14 items-center justify-center rounded-full bg-white/20 text-white backdrop-blur-md border border-white/30 shadow-2xl hover:scale-110 transition-transform">
-                        <Play className="size-6 ml-1 fill-white" />
-                      </div>
-                    </div>
-                  )}
                 </div>
               </div>
             )}

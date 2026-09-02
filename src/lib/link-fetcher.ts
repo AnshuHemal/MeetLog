@@ -82,11 +82,21 @@ export async function ensureYtDlpBinary(): Promise<string> {
   return tmpExePath;
 }
 
+export interface IngestedTranscriptSegment {
+  index: number;
+  speakerId: string;
+  startTime: number;
+  endTime: number;
+  text: string;
+}
+
 export interface IngestedLinkResult {
   audioUrl: string;
-  fileId: string;
+  fileId?: string;
   title: string;
   durationSeconds: number;
+  isYouTubeDirect?: boolean;
+  transcriptSegments?: IngestedTranscriptSegment[];
 }
 
 /**
@@ -123,54 +133,141 @@ export async function ingestMediaLink(
   try {
     // ─── 1. YouTube Media Ingestion ───────────────────────────────────────────
     if (isYouTube) {
-      log("youtube", "Extracting YouTube audio stream via high-speed extractor...");
+      log("youtube", "Parsing YouTube video identifier & metadata...");
+
+      let videoId = "";
+      const ytMatch = url.match(/(?:youtu\.be\/|youtube\.com\/(?:embed\/|v\/|watch\?v=|watch\?.+&v=|shorts\/))([\w-]{11})/);
+      if (ytMatch) {
+        videoId = ytMatch[1];
+      }
+
+      // 1A. Fetch Instant Metadata via official oEmbed (<100ms, zero API key)
+      if (videoId) {
+        try {
+          const oembedUrl = `https://www.youtube.com/oembed?url=https://www.youtube.com/watch?v=${videoId}&format=json`;
+          const oembedRes = await axios.get(oembedUrl, { timeout: 5000 });
+          if (!detectedTitle && oembedRes.data?.title) {
+            detectedTitle = oembedRes.data.title;
+          }
+        } catch (oeErr: any) {
+          console.warn("[LINK FETCHER] YouTube oEmbed warning:", oeErr.message);
+        }
+      }
+
+      // 1B. Primary Permanent Engine: Native Timed Transcript
+      // YouTube never blocks timed text/captions queries from cloud datacenter IPs.
+      // This provides millisecond-accurate dialogue without needing to download massive video files!
+      if (videoId) {
+        try {
+          log("transcript", "Extracting native YouTube timed dialogue transcript...");
+          const { YoutubeTranscript } = await import("youtube-transcript");
+          const rawTranscript = await YoutubeTranscript.fetchTranscript(videoId);
+
+          if (rawTranscript && rawTranscript.length > 0) {
+            const transcriptSegments: IngestedTranscriptSegment[] = rawTranscript.map((item, idx) => ({
+              index: idx,
+              speakerId: "SPEAKER_00",
+              startTime: Math.max(0, Number(item.offset) / 1000),
+              endTime: Math.max(0, (Number(item.offset) + Number(item.duration)) / 1000),
+              text: item.text
+                .replace(/&amp;/g, "&")
+                .replace(/&#39;/g, "'")
+                .replace(/&quot;/g, '"')
+                .replace(/\n/g, " ")
+                .trim(),
+            }));
+
+            const lastSeg = transcriptSegments[transcriptSegments.length - 1];
+            durationSeconds = Math.round(lastSeg ? lastSeg.endTime : 0);
+
+            log("success", `Successfully retrieved ${transcriptSegments.length} timed dialogue lines from YouTube!`);
+
+            return {
+              audioUrl: `https://www.youtube.com/watch?v=${videoId}`,
+              title: detectedTitle || preferredTitle || "YouTube Recording",
+              durationSeconds,
+              isYouTubeDirect: true,
+              transcriptSegments,
+            };
+          }
+        } catch (captionsErr: any) {
+          log("info", `Native captions unavailable (${captionsErr.message}). Switching to stream extraction engine...`);
+        }
+      }
+
+      // 1C. Secondary Fallback Engine: Standalone yt-dlp Audio Stream Extraction
+      log("youtube", "Extracting YouTube audio stream via standalone engine...");
       const ytDlpPath = await ensureYtDlpBinary();
       const ffmpegPath = getFfmpegBinary();
 
       const outputTemplate = join(tmpDir, `youtube_audio.%(ext)s`);
       const targetMp3 = join(tmpDir, `youtube_audio.mp3`);
 
-      // Common yt-dlp arguments to bypass bot/datacenter challenges
+      // Check if YouTube cookies or proxy are provided via environment variables
+      let cookiePath: string | null = null;
+      if (process.env.YOUTUBE_COOKIES) {
+        try {
+          cookiePath = join(os.tmpdir(), "meetlog_yt_cookies.txt");
+          await writeFile(cookiePath, process.env.YOUTUBE_COOKIES.trim(), "utf-8");
+          log("cookies", "Loaded YouTube authentication cookies from environment.");
+        } catch (e: any) {
+          console.warn("[LINK FETCHER] Could not write YOUTUBE_COOKIES:", e.message);
+        }
+      }
+
       const clientArgs = [
         "--no-playlist",
         "--extractor-args",
-        "youtube:player_client=android,ios,web",
+        "youtube:player_client=default,-android_sdkless",
         ...(process.execPath ? ["--js-runtimes", `node:${process.execPath}`] : []),
+        ...(cookiePath ? ["--cookies", cookiePath] : []),
+        ...(process.env.YOUTUBE_PROXY ? ["--proxy", process.env.YOUTUBE_PROXY] : []),
       ];
 
-      // Query metadata first
-      try {
-        const { stdout: metaOut } = await execFileAsync(ytDlpPath, [
-          "--dump-json",
-          ...clientArgs,
-          url,
-        ]);
-        const parsed = JSON.parse(metaOut);
-        if (!detectedTitle && parsed.title) {
-          detectedTitle = parsed.title;
+      // Query metadata if not detected yet
+      if (!detectedTitle || durationSeconds === 0) {
+        try {
+          const { stdout: metaOut } = await execFileAsync(ytDlpPath, [
+            "--dump-json",
+            ...clientArgs,
+            url,
+          ]);
+          const parsed = JSON.parse(metaOut);
+          if (!detectedTitle && parsed.title) detectedTitle = parsed.title;
+          if (parsed.duration) durationSeconds = Math.round(Number(parsed.duration));
+        } catch (metaErr: any) {
+          console.warn("[LINK FETCHER] Metadata extraction non-fatal:", metaErr.message);
         }
-        if (parsed.duration) {
-          durationSeconds = Math.round(Number(parsed.duration));
-        }
-      } catch (metaErr: any) {
-        console.warn("[LINK FETCHER] Metadata extraction non-fatal:", metaErr.message);
       }
 
       log("extract", "Transcoding YouTube audio stream into 16kHz speech standard...");
-      // Download best audio and transcode to mp3
-      await execFileAsync(ytDlpPath, [
-        "-x",
-        "--audio-format",
-        "mp3",
-        "--audio-quality",
-        "0",
-        "--ffmpeg-location",
-        ffmpegPath,
-        ...clientArgs,
-        "-o",
-        outputTemplate,
-        url,
-      ]);
+      try {
+        await execFileAsync(ytDlpPath, [
+          "-x",
+          "--audio-format",
+          "mp3",
+          "--audio-quality",
+          "0",
+          "--ffmpeg-location",
+          ffmpegPath,
+          ...clientArgs,
+          "-o",
+          outputTemplate,
+          url,
+        ]);
+      } catch (ytErr: any) {
+        const fullErr = (ytErr.stderr || ytErr.message || "").toString();
+        if (
+          fullErr.includes("Sign in to confirm you're not a bot") ||
+          fullErr.includes("Sign in to confirm you’re not a bot")
+        ) {
+          throw new Error(
+            "YouTube blocked cloud server stream extraction for this uncaptioned video. " +
+            "Please download the video or audio file and upload it directly via the 'Upload File' tab."
+          );
+        }
+        throw ytErr;
+      }
 
       if (!existsSync(targetMp3)) {
         throw new Error("YouTube audio extraction failed: output file not created.");

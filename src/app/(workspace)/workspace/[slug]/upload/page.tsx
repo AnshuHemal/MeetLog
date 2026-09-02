@@ -253,17 +253,24 @@ export default function UploadMeetingPage() {
         setProgress(20);
         setTerminalLogs([]);
 
-        addLog("info", "pipeline", `Starting remote link ingestion for "${title}"`);
-        addLog(
-          "storage",
-          "link",
-          `Connecting to ${previewData?.platformLabel || "remote link"}: ${mediaUrl.slice(0, 50)}...`
-        );
-        addLog(
-          "info",
-          "pipeline",
-          "Downloading stream and extracting 16kHz speech track via FFmpeg engine..."
-        );
+        const isYtLink = mediaUrl.includes("youtube.com") || mediaUrl.includes("youtu.be");
+        if (isYtLink) {
+          addLog("info", "pipeline", `Starting native YouTube timed ingestion for "${title}"`);
+          addLog("storage", "youtube", `Querying YouTube Video Streams: ${mediaUrl.slice(0, 55)}...`);
+          addLog("ai", "captions", "Extracting official timed dialogue transcript & metadata...");
+        } else {
+          addLog("info", "pipeline", `Starting remote link ingestion for "${title}"`);
+          addLog(
+            "storage",
+            "link",
+            `Connecting to ${previewData?.platformLabel || "remote link"}: ${mediaUrl.slice(0, 50)}...`
+          );
+          addLog(
+            "info",
+            "pipeline",
+            "Downloading stream and extracting 16kHz speech track via FFmpeg engine..."
+          );
+        }
 
         const result = await importMeetingFromLinkAction({
           workspaceSlug: slug,
@@ -692,8 +699,10 @@ export default function UploadMeetingPage() {
                             {previewData.title || "Remote Media Recording"}
                           </p>
                           <p className="text-[10px] text-emerald-600 dark:text-emerald-400 font-semibold flex items-center gap-1">
-                            <Sparkles className="size-3 shrink-0" />
-                            Audio track will be auto-extracted via FFmpeg &amp; transcribed
+                            <Sparkles className="size-3 shrink-0 text-emerald-500 animate-pulse" />
+                            {previewData.platform === "youtube"
+                              ? "Instant native timed transcript & Gemini 3.5 synthesis active"
+                              : "Audio track will be auto-extracted via FFmpeg & transcribed"}
                           </p>
                         </div>
                       </motion.div>
