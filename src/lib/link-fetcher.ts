@@ -12,17 +12,33 @@ import { uploadBufferToGoogleDrive, downloadGoogleDriveFile, getGoogleDriveFileI
 const execFileAsync = promisify(execFile);
 
 /**
- * Resolves or downloads the standalone yt-dlp binary
+/**
+ * Resolves or downloads the standalone yt-dlp binary.
+ * In production/serverless (Vercel, AWS Lambda), the root filesystem (/var/task)
+ * is read-only, so we MUST store downloaded binaries in os.tmpdir() (/tmp).
  */
 export async function ensureYtDlpBinary(): Promise<string> {
-  const binDir = join(process.cwd(), "bin");
-  if (!existsSync(binDir)) mkdirSync(binDir, { recursive: true });
-
   const binaryName = os.platform() === "win32" ? "yt-dlp.exe" : "yt-dlp";
-  const exePath = join(binDir, binaryName);
 
-  if (existsSync(exePath)) {
-    return exePath;
+  // 1. Check local bin in workspace (e.g. during development)
+  try {
+    const localBin = join(process.cwd(), "bin", binaryName);
+    if (existsSync(localBin)) {
+      return localBin;
+    }
+  } catch {}
+
+  // 2. In serverless (Vercel / Lambda), only os.tmpdir() is writable
+  const tmpBinDir = join(os.tmpdir(), "meetlog_bin");
+  const tmpExePath = join(tmpBinDir, binaryName);
+
+  if (existsSync(tmpExePath)) {
+    return tmpExePath;
+  }
+
+  // Ensure /tmp/meetlog_bin directory exists
+  if (!existsSync(tmpBinDir)) {
+    mkdirSync(tmpBinDir, { recursive: true });
   }
 
   const downloadUrl =
@@ -30,7 +46,7 @@ export async function ensureYtDlpBinary(): Promise<string> {
       ? "https://github.com/yt-dlp/yt-dlp/releases/latest/download/yt-dlp.exe"
       : "https://github.com/yt-dlp/yt-dlp/releases/latest/download/yt-dlp";
 
-  console.log(`[LINK FETCHER] Downloading yt-dlp binary from ${downloadUrl}...`);
+  console.log(`[LINK FETCHER] Downloading yt-dlp binary to ${tmpExePath} from ${downloadUrl}...`);
   const res = await axios({
     url: downloadUrl,
     method: "GET",
@@ -38,7 +54,7 @@ export async function ensureYtDlpBinary(): Promise<string> {
     timeout: 60000,
   });
 
-  const writer = createWriteStream(exePath);
+  const writer = createWriteStream(tmpExePath);
   res.data.pipe(writer);
 
   await new Promise((resolve, reject) => {
@@ -46,14 +62,14 @@ export async function ensureYtDlpBinary(): Promise<string> {
     writer.on("error", reject);
   });
 
-  // On linux/mac, set executable permission
+  // On linux/mac (Vercel / Lambda), ensure executable permission
   if (os.platform() !== "win32") {
     const { chmod } = await import("fs/promises");
-    await chmod(exePath, 0o755);
+    await chmod(tmpExePath, 0o755);
   }
 
-  console.log(`[LINK FETCHER] yt-dlp installed successfully at ${exePath}`);
-  return exePath;
+  console.log(`[LINK FETCHER] yt-dlp installed successfully at ${tmpExePath}`);
+  return tmpExePath;
 }
 
 export interface IngestedLinkResult {

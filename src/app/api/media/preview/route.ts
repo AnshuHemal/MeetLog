@@ -2,6 +2,8 @@ import { NextResponse } from "next/server";
 import { requireUser } from "@/lib/session";
 import axios from "axios";
 
+export const maxDuration = 30;
+
 function isPrivateIpOrHost(hostname: string): boolean {
   const lower = hostname.toLowerCase();
   if (
