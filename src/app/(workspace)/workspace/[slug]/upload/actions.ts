@@ -130,6 +130,13 @@ export async function importMeetingFromLinkAction(payload: {
   description?: string;
   numSpeakers?: number;
   provider?: "GEMINI" | "SARVAM";
+  prefetchedSegments?: Array<{
+    index: number;
+    speakerId: string;
+    startTime: number;
+    endTime: number;
+    text: string;
+  }>;
 }): Promise<CreateMeetingResult> {
   try {
     const workspace = await prisma.workspace.findUnique({
@@ -143,6 +150,80 @@ export async function importMeetingFromLinkAction(payload: {
     const rawUrl = payload.url?.trim();
     if (!rawUrl) {
       return { success: false, error: "Please enter a valid media or YouTube URL." };
+    }
+
+    // ─── Fast-Path: Client-Prefetched Transcript (Zero Network Roundtrip) ─────────
+    if (payload.prefetchedSegments && payload.prefetchedSegments.length > 0) {
+      console.log(`[IMPORT LINK] Processing client-prefetched transcript (${payload.prefetchedSegments.length} segments)...`);
+      const lastSeg = payload.prefetchedSegments[payload.prefetchedSegments.length - 1];
+      const durationSeconds = Math.round(lastSeg ? lastSeg.endTime : 0);
+
+      const meeting = await prisma.meeting.create({
+        data: {
+          workspaceId: workspace.id,
+          title: payload.title?.trim() || "YouTube Recording",
+          description: payload.description || "Imported from YouTube",
+          audioUrl: rawUrl,
+          durationSeconds,
+          status: "COMPLETED",
+          languageCode: "auto",
+          numSpeakers: payload.numSpeakers || 1,
+          progressMessage: "Import complete. Dialogue transcript synchronized from YouTube.",
+        },
+      });
+
+      await prisma.transcriptSegment.createMany({
+        data: payload.prefetchedSegments.map((s) => ({
+          meetingId: meeting.id,
+          index: s.index,
+          speakerId: s.speakerId || "SPEAKER_00",
+          startTime: s.startTime,
+          endTime: s.endTime,
+          text: s.text,
+        })),
+      });
+
+      // Background AI synthesis
+      const fullTranscript = payload.prefetchedSegments.map((s) => s.text).join(" ");
+      if (fullTranscript.trim().length > 0) {
+        (async () => {
+          try {
+            const { generateMeetingInsights, generateMeetingChapters } = await import("@/lib/gemini");
+            const [insights, chapters] = await Promise.allSettled([
+              generateMeetingInsights(fullTranscript),
+              generateMeetingChapters(fullTranscript),
+            ]);
+
+            const summaryMarkdown = insights.status === "fulfilled" ? insights.value.summary : null;
+            const chaptersJson = chapters.status === "fulfilled" ? JSON.stringify(chapters.value) : null;
+
+            await prisma.meeting.update({
+              where: { id: meeting.id },
+              data: {
+                ...(summaryMarkdown ? { summaryMarkdown } : {}),
+                ...(chaptersJson ? { chaptersJson } : {}),
+              },
+            });
+
+            if (insights.status === "fulfilled" && insights.value.actionItems?.length) {
+              await prisma.actionItem.createMany({
+                data: insights.value.actionItems.map((item) => ({
+                  meetingId: meeting.id,
+                  taskDescription: item.task,
+                  assigneeName: item.assignee || null,
+                  priority: "MEDIUM",
+                  status: "PENDING",
+                })),
+              });
+            }
+          } catch (err: any) {
+            console.warn("[IMPORT LINK] Client-prefetched AI summary generation background non-fatal:", err.message);
+          }
+        })();
+      }
+
+      revalidatePath(`/workspace/${payload.workspaceSlug}/meetings`);
+      return { success: true, meetingId: meeting.id };
     }
 
     const { ingestMediaLink } = await import("@/lib/link-fetcher");
