@@ -176,6 +176,14 @@ export async function startSarvamTranscriptionJob(
     audioBuffer = Buffer.from(audioRes.data);
   }
 
+  // If video container, extract pristine speech audio first
+  const { isMediaVideo, extractAudioFromVideo } = await import("./media-extractor");
+  if (isMediaVideo(audioUrl, audioBuffer)) {
+    console.log(`[SARVAM TRANSCRIPTION] Video detected! Extracting speech audio with FFmpeg...`);
+    const extracted = await extractAudioFromVideo(audioBuffer, audioUrl);
+    audioBuffer = extracted.audioBuffer;
+  }
+
   // Step 2: Slice audio if longer than 2 hours (7000s threshold)
   const slices = await sliceAudioBuffer(audioBuffer, "meeting.mp3");
 

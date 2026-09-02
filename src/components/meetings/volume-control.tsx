@@ -4,7 +4,7 @@ import React, { useState, useEffect, useCallback, useImperativeHandle, forwardRe
 import { Volume2, Volume1, VolumeX } from "lucide-react";
 
 interface VolumeControlProps {
-  audioRef: React.RefObject<HTMLAudioElement | null>;
+  audioRef: React.RefObject<HTMLMediaElement | HTMLAudioElement | HTMLVideoElement | null>;
   initialVolume?: number;
 }
 

@@ -640,7 +640,35 @@ export async function startGeminiTranscriptionJob(
   console.log(`[GEMINI 3.5] Starting high-precision transcription pipeline for meeting ${meetingId}...`);
   addMeetingLog(meetingId, "info", "PIPELINE", `Initializing Gemini 3.5 audio intelligence pipeline...`);
 
-  const audioBuffer = await downloadAudioBuffer(audioUrl, meetingId);
+  let audioBuffer = await downloadAudioBuffer(audioUrl, meetingId);
+  
+  // Check if media is video and extract speech audio
+  const { isMediaVideo, extractAudioFromVideo } = await import("./media-extractor");
+  if (isMediaVideo(audioUrl, audioBuffer)) {
+    console.log(`[GEMINI 3.5] Video container detected for meeting ${meetingId}. Extracting audio track...`);
+    addMeetingLog(
+      meetingId,
+      "audio",
+      "EXTRACTOR",
+      `Video container detected (${(audioBuffer.byteLength / (1024 * 1024)).toFixed(1)}MB)! Extracting 16kHz speech audio track...`
+    );
+    await prisma.meeting.update({
+      where: { id: meetingId },
+      data: {
+        progressMessage: "Extracting speech audio from video recording...",
+      },
+    }).catch(() => {});
+
+    const extracted = await extractAudioFromVideo(audioBuffer, audioUrl);
+    audioBuffer = extracted.audioBuffer;
+
+    addMeetingLog(
+      meetingId,
+      "success",
+      "EXTRACTOR",
+      `Audio track extracted successfully (${(audioBuffer.byteLength / (1024 * 1024)).toFixed(1)}MB, ready for speech chunking).`
+    );
+  }
   
   // 120 seconds (2 minutes) per chunk: guarantees token count stays safely under 8192 output limit
   // and captures 100% of speech from minute 0:00 to the end without token truncation!

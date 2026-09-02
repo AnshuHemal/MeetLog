@@ -1,7 +1,7 @@
 "use client";
 
 import React, { useState, useRef, useEffect, useMemo } from "react";
-import { Play, Pause, ChevronLeft, Volume2, Volume1, VolumeX, Search, Edit2, Check, User, ListTodo, FileText, PieChart, Loader2, RotateCcw, RotateCw, Compass, Mail, Copy, Share, Globe, Lock, Send, Bot, Highlighter, MessageSquare, Trash2, Sparkles, Scissors, Download } from "lucide-react";
+import { Play, Pause, ChevronLeft, Volume2, Volume1, VolumeX, Search, Edit2, Check, User, ListTodo, FileText, PieChart, Loader2, RotateCcw, RotateCw, Compass, Mail, Copy, Share, Globe, Lock, Send, Bot, Highlighter, MessageSquare, Trash2, Sparkles, Scissors, Download, Video } from "lucide-react";
 import Link from "next/link";
 import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar";
 import { Button } from "@/components/ui/button";
@@ -388,11 +388,27 @@ export function MeetingViewerClient({
     setTimeout(() => setIsCopying(false), 2000);
   };
 
-  const audioRef = useRef<HTMLAudioElement>(null);
+  const audioRef = useRef<HTMLVideoElement>(null);
   const volumeControlRef = useRef<VolumeControlHandle>(null);
   const [isPlaying, setIsPlaying] = useState(false);
   const [isBuffering, setIsBuffering] = useState(false);
   const [currentTime, setCurrentTime] = useState(0);
+
+  const isVideoMedia = useMemo(() => {
+    const combined = `${meeting.audioUrl || ""} ${meeting.title || ""}`.toLowerCase();
+    return (
+      combined.includes(".mp4") ||
+      combined.includes(".webm") ||
+      combined.includes(".mov") ||
+      combined.includes(".mkv") ||
+      combined.includes(".avi") ||
+      combined.includes(".flv") ||
+      combined.includes(".m4v") ||
+      combined.includes("video")
+    );
+  }, [meeting.audioUrl, meeting.title]);
+
+  const [showVideo, setShowVideo] = useState(true);
 
   const maxSegmentDuration = useMemo(() => {
     return segments.reduce((max, s) => Math.max(max, s.endTime || 0), 0);
@@ -1481,28 +1497,32 @@ export function MeetingViewerClient({
   return (
     <div className="flex flex-1 flex-col overflow-hidden bg-background">
       {}
-      <audio
-        ref={audioRef}
-        src={getOptimizedAudioUrl(meeting.audioUrl, meeting.shareToken)}
-        preload="auto"
-        onTimeUpdate={handleTimeUpdate}
-        onLoadedMetadata={handleLoadedMetadata}
-        onPlay={() => setIsPlaying(true)}
-        onPause={() => setIsPlaying(false)}
-        onWaiting={() => setIsBuffering(true)}
-        onPlaying={() => {
-          setIsBuffering(false);
-          setIsPlaying(true);
-        }}
-        onCanPlay={() => setIsBuffering(false)}
-        onSeeking={() => setIsBuffering(true)}
-        onSeeked={() => setIsBuffering(false)}
-        onEnded={() => {
-          setIsPlaying(false);
-          setIsBuffering(false);
-        }}
-        crossOrigin="anonymous"
-      />
+      {/* Media Player: hidden when video is visible in the studio screen */}
+      {isVideoMedia && showVideo ? null : (
+        <video
+          ref={audioRef}
+          src={getOptimizedAudioUrl(meeting.audioUrl, meeting.shareToken)}
+          preload="auto"
+          onTimeUpdate={handleTimeUpdate}
+          onLoadedMetadata={handleLoadedMetadata}
+          onPlay={() => setIsPlaying(true)}
+          onPause={() => setIsPlaying(false)}
+          onWaiting={() => setIsBuffering(true)}
+          onPlaying={() => {
+            setIsBuffering(false);
+            setIsPlaying(true);
+          }}
+          onCanPlay={() => setIsBuffering(false)}
+          onSeeking={() => setIsBuffering(true)}
+          onSeeked={() => setIsBuffering(false)}
+          onEnded={() => {
+            setIsPlaying(false);
+            setIsBuffering(false);
+          }}
+          crossOrigin="anonymous"
+          className="hidden"
+        />
+      )}
 
       {}
       <div className="flex flex-1 overflow-hidden">
@@ -1540,6 +1560,24 @@ export function MeetingViewerClient({
                 </span>
                 <span className="text-[11px] font-semibold">Follow Text</span>
               </Button>
+
+              {/* Toggle Video Player if Video Recording */}
+              {isVideoMedia && (
+                <Button
+                  onClick={() => setShowVideo(!showVideo)}
+                  variant="ghost"
+                  size="sm"
+                  className={`h-8 text-xs flex items-center gap-1.5 cursor-pointer px-2.5 rounded-lg border shrink-0 transition-all ${
+                    showVideo
+                      ? "bg-purple-500/10 text-purple-600 dark:text-purple-400 border-purple-500/30 hover:bg-purple-500/15"
+                      : "bg-card text-muted-foreground border-border hover:bg-muted/10"
+                  }`}
+                  title="Toggle Video Screen"
+                >
+                  <Video className="size-3.5 text-purple-500" />
+                  <span className="text-[11px] font-semibold">{showVideo ? "Hide Video" : "Show Video"}</span>
+                </Button>
+              )}
 
               <div className="relative flex-1">
                 <Search className="absolute left-2.5 top-2.5 size-3.5 text-muted-foreground" />
@@ -1731,6 +1769,58 @@ export function MeetingViewerClient({
             ref={transcriptContainerRef}
             className="flex-1 overflow-y-auto px-6 py-6 space-y-6 relative"
           >
+            {/* ─── Synchronized Video Studio Screen ─── */}
+            {isVideoMedia && showVideo && (
+              <div className="mb-6 overflow-hidden rounded-2xl border border-border/80 bg-black/95 shadow-2xl relative group shrink-0">
+                <div className="relative aspect-video max-h-[360px] w-full flex items-center justify-center bg-black/95">
+                  <video
+                    ref={audioRef}
+                    src={getOptimizedAudioUrl(meeting.audioUrl, meeting.shareToken)}
+                    preload="auto"
+                    onTimeUpdate={handleTimeUpdate}
+                    onLoadedMetadata={handleLoadedMetadata}
+                    onPlay={() => setIsPlaying(true)}
+                    onPause={() => setIsPlaying(false)}
+                    onWaiting={() => setIsBuffering(true)}
+                    onPlaying={() => {
+                      setIsBuffering(false);
+                      setIsPlaying(true);
+                    }}
+                    onCanPlay={() => setIsBuffering(false)}
+                    onSeeking={() => setIsBuffering(true)}
+                    onSeeked={() => setIsBuffering(false)}
+                    onEnded={() => {
+                      setIsPlaying(false);
+                      setIsBuffering(false);
+                    }}
+                    crossOrigin="anonymous"
+                    className="w-full h-full object-contain cursor-pointer"
+                    onClick={togglePlay}
+                  />
+
+                  {/* Badges */}
+                  <div className="absolute top-3 left-3 flex items-center gap-2 pointer-events-none">
+                    <span className="px-2.5 py-1 rounded-full bg-black/80 backdrop-blur-md text-[10px] font-bold text-white border border-white/15 flex items-center gap-1.5 shadow-lg">
+                      <span className="size-1.5 rounded-full bg-purple-500 animate-pulse" />
+                      VIDEO RECORDING
+                    </span>
+                  </div>
+
+                  {/* Play/Pause Overlay when Paused */}
+                  {!isPlaying && (
+                    <div
+                      onClick={togglePlay}
+                      className="absolute inset-0 flex items-center justify-center bg-black/35 backdrop-blur-[1px] cursor-pointer transition-all hover:bg-black/20"
+                    >
+                      <div className="flex size-14 items-center justify-center rounded-full bg-white/20 text-white backdrop-blur-md border border-white/30 shadow-2xl hover:scale-110 transition-transform">
+                        <Play className="size-6 ml-1 fill-white" />
+                      </div>
+                    </div>
+                  )}
+                </div>
+              </div>
+            )}
+
             {}
             {isSearching && (
               <div className="sticky top-0 z-30 -mx-6 -mt-6 mb-4 px-6 pt-3 pb-2.5 bg-background/95 backdrop-blur-md border-b border-primary/20 shadow-xs animate-in fade-in duration-150">

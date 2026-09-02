@@ -13,6 +13,8 @@ import {
   Globe,
   Cpu,
   ExternalLink,
+  Video,
+  Film,
 } from "lucide-react";
 import { motion } from "motion/react";
 
@@ -54,6 +56,15 @@ export default function UploadMeetingPage() {
   const [isGdriveAuthRequired, setIsGdriveAuthRequired] = useState(false);
   const [isAuthorizingGdrive, setIsAuthorizingGdrive] = useState(false);
   const [gdriveAuthUrl, setGdriveAuthUrl] = useState("/api/auth/gdrive/auth");
+
+  const isVideoFile = (f: File | null) => {
+    if (!f) return false;
+    const ext = f.name.split(".").pop()?.toLowerCase() || "";
+    return (
+      f.type.startsWith("video/") ||
+      ["mp4", "webm", "mov", "mkv", "avi", "flv", "m4v", "wmv", "3gp", "ts"].includes(ext)
+    );
+  };
 
   const addLog = (
     level: TerminalLogEntry["level"],
@@ -178,8 +189,22 @@ export default function UploadMeetingPage() {
       setProgress(0);
       setTerminalLogs([]);
 
+      const isVideo = isVideoFile(file);
       addLog("info", "pipeline", `Starting pipeline execution for "${title}"`);
-      addLog("storage", "upload", `Initializing 2MB resumable upload for ${(file.size / (1024 * 1024)).toFixed(1)}MB audio file...`);
+      if (isVideo) {
+        addLog(
+          "storage",
+          "video",
+          `Initializing 2MB resumable upload for ${(file.size / (1024 * 1024)).toFixed(1)}MB video file (${file.name.split(".").pop()?.toUpperCase()})...`
+        );
+        addLog("info", "pipeline", "Speech audio will be automatically extracted on the server via FFmpeg.");
+      } else {
+        addLog(
+          "storage",
+          "upload",
+          `Initializing 2MB resumable upload for ${(file.size / (1024 * 1024)).toFixed(1)}MB audio file...`
+        );
+      }
 
       let lastReportedPercent = -1;
       const { audioUrl, duration } = await uploadAudioToGoogleDrive(file, (percent) => {
@@ -293,10 +318,10 @@ export default function UploadMeetingPage() {
             {/* ─── Top 2-Column Section (Audio + Details) ───────────────────── */}
             <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
 
-              {/* Left Column: Audio Input */}
+              {/* Left Column: Audio / Video Input */}
               <div className="space-y-2 flex flex-col h-full">
                 <Label className="text-sm font-semibold">
-                  {activeTab === "upload" ? "Audio Recording File" : "Studio Audio Input"}
+                  {activeTab === "upload" ? "Audio or Video Recording File" : "Studio Audio Input"}
                 </Label>
 
                 {activeTab === "upload" ? (
@@ -304,9 +329,11 @@ export default function UploadMeetingPage() {
                     onDragOver={handleDragOver}
                     onDrop={handleDrop}
                     onClick={() => fileInputRef.current?.click()}
-                    className={`flex-1 flex flex-col items-center justify-center border-2 border-dashed rounded-xl p-8 cursor-pointer transition-colors min-h-[220px] ${
+                    className={`flex-1 flex flex-col items-center justify-center border-2 border-dashed rounded-xl p-8 cursor-pointer transition-all min-h-[230px] ${
                       file
-                        ? "border-primary/50 bg-primary/5"
+                        ? isVideoFile(file)
+                          ? "border-purple-500/50 bg-purple-500/5"
+                          : "border-primary/50 bg-primary/5"
                         : "border-border hover:border-primary/40 hover:bg-muted/50"
                     }`}
                   >
@@ -314,17 +341,26 @@ export default function UploadMeetingPage() {
                       type="file"
                       ref={fileInputRef}
                       onChange={handleFileChange}
-                      accept="audio/*"
+                      accept="audio/*,video/*,.mp4,.m4a,.webm,.mov,.mkv,.avi,.flv,.m4v,.wmv,.3gp"
                       className="hidden"
                       disabled={isBusy}
                     />
 
                     {file ? (
                       <div className="flex flex-col items-center text-center gap-3 w-full max-w-xs">
-                        <div className="flex size-14 items-center justify-center rounded-xl bg-primary/10 text-primary relative">
-                          <FileAudio className="size-7" />
+                        <div
+                          className={`flex size-14 items-center justify-center rounded-xl relative transition-all ${
+                            isVideoFile(file)
+                              ? "bg-purple-500/15 text-purple-500 border border-purple-500/30 shadow-[0_0_24px_rgba(168,85,247,0.2)]"
+                              : "bg-primary/10 text-primary"
+                          }`}
+                        >
+                          {isVideoFile(file) ? <Video className="size-7" /> : <FileAudio className="size-7" />}
                           {file.size > 20 * 1024 * 1024 && (
-                            <span className="absolute -top-1 -right-1 flex size-5 items-center justify-center rounded-full bg-emerald-500 text-[9px] font-black text-white shadow-xs" title="Long Recording Detected">
+                            <span
+                              className="absolute -top-1 -right-1 flex size-5 items-center justify-center rounded-full bg-emerald-500 text-[9px] font-black text-white shadow-xs"
+                              title="Large Recording Detected"
+                            >
                               ⚡
                             </span>
                           )}
@@ -334,17 +370,30 @@ export default function UploadMeetingPage() {
                           <div className="flex items-center justify-center gap-2 text-xs text-muted-foreground">
                             <span>{(file.size / (1024 * 1024)).toFixed(1)} MB</span>
                             <span>•</span>
-                            <span className="text-emerald-600 dark:text-emerald-400 font-medium">
-                              ~{Math.ceil(file.size / (2 * 1024 * 1024))} Chunks
+                            <span
+                              className={
+                                isVideoFile(file)
+                                  ? "text-purple-600 dark:text-purple-400 font-semibold"
+                                  : "text-emerald-600 dark:text-emerald-400 font-semibold"
+                              }
+                            >
+                              {isVideoFile(file) ? "Video Container" : "Audio Recording"}
                             </span>
                           </div>
                         </div>
 
-                        {file.size > 20 * 1024 * 1024 && (
-                          <div className="w-full bg-emerald-500/10 border border-emerald-500/20 text-emerald-700 dark:text-emerald-300 p-2 rounded-lg text-[11px] font-medium flex items-center justify-center gap-1.5 shadow-2xs">
-                            <span className="size-1.5 rounded-full bg-emerald-500 animate-ping shrink-0" />
-                            <span>Long Audio Streamer Verified (Up to 6 Hours)</span>
+                        {isVideoFile(file) ? (
+                          <div className="w-full bg-purple-500/10 border border-purple-500/20 text-purple-700 dark:text-purple-300 p-2 rounded-lg text-[11px] font-medium flex items-center justify-center gap-1.5 shadow-2xs">
+                            <Film className="size-3.5 text-purple-500 shrink-0" />
+                            <span>Speech audio auto-extracted on server</span>
                           </div>
+                        ) : (
+                          file.size > 20 * 1024 * 1024 && (
+                            <div className="w-full bg-emerald-500/10 border border-emerald-500/20 text-emerald-700 dark:text-emerald-300 p-2 rounded-lg text-[11px] font-medium flex items-center justify-center gap-1.5 shadow-2xs">
+                              <span className="size-1.5 rounded-full bg-emerald-500 animate-ping shrink-0" />
+                              <span>Long Audio Streamer Verified (Up to 6 Hours)</span>
+                            </div>
+                          )
                         )}
 
                         <Button
@@ -364,11 +413,27 @@ export default function UploadMeetingPage() {
                       </div>
                     ) : (
                       <div className="flex flex-col items-center text-center">
-                        <UploadCloud className="size-10 text-primary/80 mb-3 animate-bounce" />
-                        <p className="text-sm font-medium text-foreground">Drag & drop audio here, or click to browse</p>
-                        <p className="text-xs text-muted-foreground mt-1">Supports MP3, WAV, M4A, AAC (Up to 6 Hours / 500MB)</p>
-                        <div className="mt-3 inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full bg-primary/10 border border-primary/20 text-[11px] font-bold text-primary">
-                          <span>⚡ Enterprise Long Audio Chunking Enabled</span>
+                        <div className="size-12 rounded-2xl bg-primary/10 border border-primary/20 flex items-center justify-center mb-3 shadow-inner">
+                          <UploadCloud className="size-6 text-primary animate-bounce" />
+                        </div>
+                        <p className="text-sm font-semibold text-foreground">
+                          Drag &amp; drop audio or video here, or click to browse
+                        </p>
+                        <p className="text-xs text-muted-foreground mt-1 max-w-xs">
+                          Supports MP4, WEBM, M4A, MOV, MKV, MP3, WAV (Up to 2GB / 6 Hours)
+                        </p>
+                        <div className="mt-3 flex flex-wrap items-center justify-center gap-1.5 max-w-sm">
+                          {["MP4", "WEBM", "M4A", "MP3", "WAV", "MOV", "MKV"].map((fmt) => (
+                            <span
+                              key={fmt}
+                              className="px-2 py-0.5 rounded-md bg-muted text-[10px] font-semibold text-muted-foreground border border-border/60"
+                            >
+                              {fmt}
+                            </span>
+                          ))}
+                        </div>
+                        <div className="mt-3.5 inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full bg-primary/10 border border-primary/20 text-[11px] font-bold text-primary">
+                          <span>⚡ Video-to-Audio Auto Extraction &amp; Chunking Enabled</span>
                         </div>
                       </div>
                     )}
