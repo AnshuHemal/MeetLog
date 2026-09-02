@@ -156,7 +156,8 @@ export async function ingestMediaLink(
       if (process.env.YOUTUBE_COOKIES) {
         try {
           cookiePath = join(os.tmpdir(), "meetlog_yt_cookies.txt");
-          await writeFile(cookiePath, process.env.YOUTUBE_COOKIES.trim(), "utf-8");
+          const cookieContent = process.env.YOUTUBE_COOKIES.trim().replace(/\\n/g, "\n");
+          await writeFile(cookiePath, cookieContent, "utf-8");
           log("cookies", "Loaded YouTube authentication cookies from environment.");
         } catch (e: any) {
           console.warn("[LINK FETCHER] Could not write YOUTUBE_COOKIES:", e.message);
