@@ -130,11 +130,19 @@ export async function ingestMediaLink(
       const outputTemplate = join(tmpDir, `youtube_audio.%(ext)s`);
       const targetMp3 = join(tmpDir, `youtube_audio.mp3`);
 
+      // Common yt-dlp arguments to bypass bot/datacenter challenges
+      const clientArgs = [
+        "--no-playlist",
+        "--extractor-args",
+        "youtube:player_client=android,ios,web",
+        ...(process.execPath ? ["--js-runtimes", `node:${process.execPath}`] : []),
+      ];
+
       // Query metadata first
       try {
         const { stdout: metaOut } = await execFileAsync(ytDlpPath, [
           "--dump-json",
-          "--no-playlist",
+          ...clientArgs,
           url,
         ]);
         const parsed = JSON.parse(metaOut);
@@ -158,7 +166,7 @@ export async function ingestMediaLink(
         "0",
         "--ffmpeg-location",
         ffmpegPath,
-        "--no-playlist",
+        ...clientArgs,
         "-o",
         outputTemplate,
         url,
