@@ -1,7 +1,5 @@
 "use server";
 
-export const maxDuration = 60;
-
 import { revalidatePath } from "next/cache";
 import { prisma } from "@/lib/prisma";
 import { startSarvamTranscriptionJob } from "@/lib/sarvam";
