@@ -15,15 +15,25 @@ import {
   ExternalLink,
   Video,
   Film,
+  Link2,
+  ClipboardPaste,
 } from "lucide-react";
 import { motion } from "motion/react";
+
+function YoutubeIcon(props: React.SVGProps<SVGSVGElement>) {
+  return (
+    <svg viewBox="0 0 24 24" fill="currentColor" {...props}>
+      <path d="M23.498 6.186a3.016 3.016 0 0 0-2.122-2.136C19.505 3.545 12 3.545 12 3.545s-7.505 0-9.377.505A3.017 3.017 0 0 0 .502 6.186C0 8.07 0 12 0 12s0 3.93.502 5.814a3.016 3.016 0 0 0 2.122 2.136c1.871.505 9.376.505 9.376.505s7.505 0 9.377-.505a3.015 3.015 0 0 0 2.122-2.136C24 15.93 24 12 24 12s0-3.93-.502-5.814zM9.545 15.568V8.432L15.818 12l-6.273 3.568z" />
+    </svg>
+  );
+}
 
 import { WorkspaceTopbar } from "../_components/workspace-topbar";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Textarea } from "@/components/ui/textarea";
 import { Label } from "@/components/ui/label";
-import { createMeetingAction } from "./actions";
+import { createMeetingAction, importMeetingFromLinkAction } from "./actions";
 import { FadeIn } from "@/components/motion/fade-in";
 import { uploadAudioToGoogleDrive, DriveAuthRequiredError } from "@/lib/gdrive-client-upload";
 import { AudioStudioRecorder } from "@/components/shared/audio-studio-recorder";
@@ -38,12 +48,21 @@ export default function UploadMeetingPage() {
   const router = useRouter();
   const slug = params.slug as string;
 
-  const [activeTab, setActiveTab] = useState<"upload" | "studio">("upload");
+  const [activeTab, setActiveTab] = useState<"upload" | "link" | "studio">("upload");
   const [provider, setProvider] = useState<"GEMINI" | "SARVAM">("GEMINI");
   const [title, setTitle] = useState("");
   const [description, setDescription] = useState("");
   const [numSpeakers, setNumSpeakers] = useState("");
   const [file, setFile] = useState<File | null>(null);
+  const [mediaUrl, setMediaUrl] = useState("");
+  const [previewData, setPreviewData] = useState<{
+    platform?: string;
+    title?: string;
+    author?: string;
+    thumbnailUrl?: string | null;
+    platformLabel?: string;
+  } | null>(null);
+  const [isPreviewLoading, setIsPreviewLoading] = useState(false);
   const [uploadState, setUploadState] = useState<"idle" | "uploading" | "submitting" | "success" | "error">("idle");
   const [progress, setProgress] = useState(0);
   const [errorMessage, setErrorMessage] = useState("");
@@ -56,6 +75,46 @@ export default function UploadMeetingPage() {
   const [isGdriveAuthRequired, setIsGdriveAuthRequired] = useState(false);
   const [isAuthorizingGdrive, setIsAuthorizingGdrive] = useState(false);
   const [gdriveAuthUrl, setGdriveAuthUrl] = useState("/api/auth/gdrive/auth");
+
+  const handleUrlChange = async (val: string) => {
+    setMediaUrl(val);
+    const trimmed = val.trim();
+    if (!trimmed.startsWith("http://") && !trimmed.startsWith("https://")) {
+      setPreviewData(null);
+      return;
+    }
+
+    setIsPreviewLoading(true);
+    try {
+      const res = await fetch("/api/media/preview", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ url: trimmed }),
+      });
+      const data = await res.json();
+      if (data.success) {
+        setPreviewData(data);
+        if (!title && data.title) {
+          setTitle(data.title);
+        }
+      }
+    } catch {
+      // Non-fatal preview error
+    } finally {
+      setIsPreviewLoading(false);
+    }
+  };
+
+  const handlePasteUrl = async () => {
+    try {
+      const clipboardText = await navigator.clipboard.readText();
+      if (clipboardText) {
+        handleUrlChange(clipboardText);
+      }
+    } catch {
+      // Clipboard access denied
+    }
+  };
 
   const isVideoFile = (f: File | null) => {
     if (!f) return false;
@@ -137,7 +196,10 @@ export default function UploadMeetingPage() {
     uploadState === "success";
 
   const canSubmit =
-    isHydrated && Boolean(file) && title.trim().length > 0 && !isBusy;
+    isHydrated &&
+    (activeTab === "link" ? Boolean(mediaUrl.trim()) : Boolean(file)) &&
+    title.trim().length > 0 &&
+    !isBusy;
 
   const handleFileChange = (e: React.ChangeEvent<HTMLInputElement>) => {
     if (e.target.files && e.target.files.length > 0) {
@@ -173,6 +235,74 @@ export default function UploadMeetingPage() {
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
+
+    if (activeTab === "link") {
+      if (!mediaUrl.trim()) {
+        setErrorMessage("Please enter a media, YouTube, or Google Drive link.");
+        return;
+      }
+      if (!title.trim()) {
+        setErrorMessage("Please enter a title for the meeting.");
+        return;
+      }
+
+      try {
+        setShowTerminal(true);
+        setErrorMessage("");
+        setUploadState("uploading");
+        setProgress(20);
+        setTerminalLogs([]);
+
+        addLog("info", "pipeline", `Starting remote link ingestion for "${title}"`);
+        addLog(
+          "storage",
+          "link",
+          `Connecting to ${previewData?.platformLabel || "remote link"}: ${mediaUrl.slice(0, 50)}...`
+        );
+        addLog(
+          "info",
+          "pipeline",
+          "Downloading stream and extracting 16kHz speech track via FFmpeg engine..."
+        );
+
+        const result = await importMeetingFromLinkAction({
+          workspaceSlug: slug,
+          url: mediaUrl.trim(),
+          title,
+          description: description || undefined,
+          numSpeakers: numSpeakers ? parseInt(numSpeakers, 10) : undefined,
+          provider,
+        });
+
+        if (!result.success) {
+          throw new Error(result.error || "Failed to ingest media from link.");
+        }
+
+        setProgress(100);
+        addLog(
+          "success",
+          "pipeline",
+          "Meeting created and queued for Gemini audio transcription!"
+        );
+        setUploadState("success");
+
+        setTimeout(() => {
+          if (result?.meetingId) {
+            router.push(`/workspace/${slug}/meetings/${result.meetingId}`);
+          } else {
+            router.push(`/workspace/${slug}`);
+          }
+        }, 800);
+        return;
+      } catch (err: any) {
+        console.error("Link ingestion error:", err);
+        setUploadState("error");
+        addLog("error", "error", err.message || "Failed to process media link.");
+        setErrorMessage(err.message || "Failed to process media link.");
+        return;
+      }
+    }
+
     if (!file) {
       setErrorMessage("Please select an audio file or record audio first.");
       return;
@@ -287,7 +417,7 @@ export default function UploadMeetingPage() {
               <button
                 type="button"
                 onClick={() => setActiveTab("upload")}
-                className={`flex items-center gap-2 px-3.5 py-1.5 rounded-lg text-xs font-bold transition-all cursor-pointer ${
+                className={`flex items-center gap-2 px-3 py-1.5 rounded-lg text-xs font-bold transition-all cursor-pointer ${
                   activeTab === "upload"
                     ? "bg-card text-foreground shadow-xs border border-border"
                     : "text-muted-foreground hover:text-foreground"
@@ -298,8 +428,20 @@ export default function UploadMeetingPage() {
               </button>
               <button
                 type="button"
+                onClick={() => setActiveTab("link")}
+                className={`flex items-center gap-2 px-3 py-1.5 rounded-lg text-xs font-bold transition-all cursor-pointer ${
+                  activeTab === "link"
+                    ? "bg-card text-foreground shadow-xs border border-border"
+                    : "text-muted-foreground hover:text-foreground"
+                }`}
+              >
+                <Link2 className="size-3.5 text-blue-500" />
+                <span>Import Link</span>
+              </button>
+              <button
+                type="button"
                 onClick={() => setActiveTab("studio")}
-                className={`flex items-center gap-2 px-3.5 py-1.5 rounded-lg text-xs font-bold transition-all cursor-pointer ${
+                className={`flex items-center gap-2 px-3 py-1.5 rounded-lg text-xs font-bold transition-all cursor-pointer ${
                   activeTab === "studio"
                     ? "bg-card text-foreground shadow-xs border border-border"
                     : "text-muted-foreground hover:text-foreground"
@@ -321,7 +463,11 @@ export default function UploadMeetingPage() {
               {/* Left Column: Audio / Video Input */}
               <div className="space-y-2 flex flex-col h-full">
                 <Label className="text-sm font-semibold">
-                  {activeTab === "upload" ? "Audio or Video Recording File" : "Studio Audio Input"}
+                  {activeTab === "upload"
+                    ? "Audio or Video Recording File"
+                    : activeTab === "link"
+                    ? "Remote Video or Audio Link"
+                    : "Studio Audio Input"}
                 </Label>
 
                 {activeTab === "upload" ? (
@@ -435,6 +581,125 @@ export default function UploadMeetingPage() {
                         <div className="mt-3.5 inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full bg-primary/10 border border-primary/20 text-[11px] font-bold text-primary">
                           <span>⚡ Video-to-Audio Auto Extraction &amp; Chunking Enabled</span>
                         </div>
+                      </div>
+                    )}
+                  </div>
+                ) : activeTab === "link" ? (
+                  <div className="flex-1 flex flex-col justify-between border rounded-xl p-5 bg-card/60 backdrop-blur-sm border-border shadow-xs space-y-4 min-h-[230px]">
+                    <div className="space-y-3">
+                      <div className="flex items-center justify-between">
+                        <div className="flex items-center gap-2">
+                          <div className="size-8 rounded-lg bg-blue-500/10 border border-blue-500/20 flex items-center justify-center text-blue-500">
+                            <Link2 className="size-4" />
+                          </div>
+                          <div>
+                            <p className="text-xs font-bold text-foreground">Import from Web Link</p>
+                            <p className="text-[11px] text-muted-foreground">YouTube, Google Drive, Loom, or direct MP4/MP3</p>
+                          </div>
+                        </div>
+
+                        {/* Quick Platform Badges */}
+                        <div className="hidden sm:flex items-center gap-1.5">
+                          <span className="px-2 py-0.5 rounded-md bg-red-500/10 text-red-500 border border-red-500/20 text-[10px] font-bold flex items-center gap-1">
+                            <YoutubeIcon className="size-3" /> YouTube
+                          </span>
+                          <span className="px-2 py-0.5 rounded-md bg-blue-500/10 text-blue-500 border border-blue-500/20 text-[10px] font-bold">
+                            Drive
+                          </span>
+                          <span className="px-2 py-0.5 rounded-md bg-purple-500/10 text-purple-500 border border-purple-500/20 text-[10px] font-bold">
+                            Loom
+                          </span>
+                        </div>
+                      </div>
+
+                      {/* URL Input Bar with Instant Paste */}
+                      <div className="relative flex items-center">
+                        <Link2 className="absolute left-3 size-4 text-muted-foreground" />
+                        <Input
+                          type="url"
+                          value={mediaUrl}
+                          onChange={(e) => handleUrlChange(e.target.value)}
+                          placeholder="Paste link: https://www.youtube.com/watch?v=... or Google Drive / MP4"
+                          className="pl-9 pr-24 h-10 text-xs bg-muted/30 border-border focus-visible:ring-primary font-mono"
+                          disabled={isBusy}
+                        />
+                        <div className="absolute right-1.5 flex items-center gap-1">
+                          {mediaUrl ? (
+                            <button
+                              type="button"
+                              onClick={() => {
+                                setMediaUrl("");
+                                setPreviewData(null);
+                              }}
+                              disabled={isBusy}
+                              className="px-2 py-1 text-[10px] font-bold text-muted-foreground hover:text-foreground cursor-pointer rounded hover:bg-muted"
+                            >
+                              Clear
+                            </button>
+                          ) : (
+                            <button
+                              type="button"
+                              onClick={handlePasteUrl}
+                              disabled={isBusy}
+                              className="px-2.5 py-1 text-[11px] font-bold bg-primary/10 hover:bg-primary/20 text-primary border border-primary/20 rounded-md cursor-pointer flex items-center gap-1 transition-all"
+                            >
+                              <ClipboardPaste className="size-3" />
+                              <span>Paste</span>
+                            </button>
+                          )}
+                        </div>
+                      </div>
+                    </div>
+
+                    {/* Live Preview Card */}
+                    {isPreviewLoading ? (
+                      <div className="flex items-center justify-center p-6 border rounded-lg bg-muted/20 border-dashed border-border/80 text-muted-foreground gap-2 text-xs">
+                        <Loader2 className="size-4 animate-spin text-primary" />
+                        <span>Inspecting remote media metadata...</span>
+                      </div>
+                    ) : previewData ? (
+                      <motion.div
+                        initial={{ opacity: 0, y: 4 }}
+                        animate={{ opacity: 1, y: 0 }}
+                        className="flex items-start gap-3.5 p-3 rounded-xl border border-primary/20 bg-primary/5 relative overflow-hidden"
+                      >
+                        {previewData.thumbnailUrl ? (
+                          <img
+                            src={previewData.thumbnailUrl}
+                            alt="Media Thumbnail"
+                            className="size-16 rounded-lg object-cover border border-border shadow-xs shrink-0"
+                          />
+                        ) : (
+                          <div className="size-16 rounded-lg bg-primary/10 border border-primary/20 flex items-center justify-center text-primary shrink-0">
+                            {previewData.platform === "youtube" ? (
+                              <YoutubeIcon className="size-7 text-red-500" />
+                            ) : (
+                              <Video className="size-7 text-primary" />
+                            )}
+                          </div>
+                        )}
+
+                        <div className="flex-1 min-w-0 space-y-1">
+                          <div className="flex items-center gap-1.5">
+                            <span className="px-2 py-0.5 rounded-md bg-primary/15 text-primary text-[10px] font-extrabold uppercase tracking-wide">
+                              {previewData.platformLabel || previewData.platform || "Media Stream"}
+                            </span>
+                            <span className="text-[10px] text-muted-foreground truncate">
+                              {previewData.author || "Ready to ingest"}
+                            </span>
+                          </div>
+                          <p className="text-xs font-bold text-foreground line-clamp-1">
+                            {previewData.title || "Remote Media Recording"}
+                          </p>
+                          <p className="text-[10px] text-emerald-600 dark:text-emerald-400 font-semibold flex items-center gap-1">
+                            <Sparkles className="size-3 shrink-0" />
+                            Audio track will be auto-extracted via FFmpeg &amp; transcribed
+                          </p>
+                        </div>
+                      </motion.div>
+                    ) : (
+                      <div className="p-3 rounded-xl border border-border/60 bg-muted/20 text-center text-muted-foreground text-[11px]">
+                        💡 Paste any public YouTube link, Google Drive link, or video/audio URL to ingest automatically.
                       </div>
                     )}
                   </div>
@@ -680,12 +945,15 @@ export default function UploadMeetingPage() {
               >
                 {uploadState === "uploading" ? (
                   <>
-                    <Loader2 className="size-4 animate-spin mr-2" /> Uploading ({progress}%)
+                    <Loader2 className="size-4 animate-spin mr-2" />
+                    {activeTab === "link" ? "Ingesting Media..." : `Uploading (${progress}%)`}
                   </>
                 ) : uploadState === "submitting" ? (
                   <>
                     <Loader2 className="size-4 animate-spin mr-2" /> Initializing AI...
                   </>
+                ) : activeTab === "link" ? (
+                  "Import & Transcribe"
                 ) : (
                   "Upload & Process"
                 )}

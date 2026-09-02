@@ -122,3 +122,47 @@ export async function createMeetingAction(payload: {
     };
   }
 }
+
+export async function importMeetingFromLinkAction(payload: {
+  workspaceSlug: string;
+  url: string;
+  title: string;
+  description?: string;
+  numSpeakers?: number;
+  provider?: "GEMINI" | "SARVAM";
+}): Promise<CreateMeetingResult> {
+  try {
+    const workspace = await prisma.workspace.findUnique({
+      where: { slug: payload.workspaceSlug },
+    });
+
+    if (!workspace) {
+      return { success: false, error: "Workspace not found" };
+    }
+
+    const rawUrl = payload.url?.trim();
+    if (!rawUrl) {
+      return { success: false, error: "Please enter a valid media or YouTube URL." };
+    }
+
+    const { ingestMediaLink } = await import("@/lib/link-fetcher");
+    const ingested = await ingestMediaLink(rawUrl, payload.title);
+
+    return createMeetingAction({
+      workspaceSlug: payload.workspaceSlug,
+      title: payload.title || ingested.title,
+      description: payload.description,
+      audioUrl: ingested.audioUrl,
+      durationSeconds: ingested.durationSeconds,
+      languageCode: "unknown",
+      numSpeakers: payload.numSpeakers,
+      provider: payload.provider || "GEMINI",
+    });
+  } catch (error: any) {
+    console.error("[IMPORT MEETING FROM LINK ACTION ERROR]", error);
+    return {
+      success: false,
+      error: error.message || "Failed to ingest media from the provided link.",
+    };
+  }
+}

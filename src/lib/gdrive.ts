@@ -475,3 +475,63 @@ export async function deleteGoogleDriveFile(urlOrId: string): Promise<boolean> {
     throw error;
   }
 }
+
+export async function uploadBufferToGoogleDrive(
+  buffer: Buffer,
+  fileName: string,
+  mimeType: string = "audio/mpeg"
+): Promise<{ audioUrl: string; fileId: string }> {
+  const accessToken = await getGoogleDriveAccessToken();
+  if (!accessToken) {
+    throw new Error("Google Drive access token could not be generated. Please re-authorize Google Drive.");
+  }
+
+  const folderId = extractFolderId(process.env.GOOGLE_DRIVE_FOLDER_ID);
+  const metadata: Record<string, any> = {
+    name: fileName,
+    mimeType,
+  };
+  if (folderId) {
+    metadata.parents = [folderId];
+  }
+
+  const boundary = "-------314159265358979323846";
+  const delimiter = `\r\n--${boundary}\r\n`;
+  const closeDelimiter = `\r\n--${boundary}--`;
+
+  const multipartBody = Buffer.concat([
+    Buffer.from(
+      delimiter +
+        "Content-Type: application/json; charset=UTF-8\r\n\r\n" +
+        JSON.stringify(metadata) +
+        delimiter +
+        `Content-Type: ${mimeType}\r\n\r\n`
+    ),
+    buffer,
+    Buffer.from(closeDelimiter),
+  ]);
+
+  const response = await axios.post(
+    "https://www.googleapis.com/upload/drive/v3/files?uploadType=multipart",
+    multipartBody,
+    {
+      headers: {
+        Authorization: `Bearer ${accessToken}`,
+        "Content-Type": `multipart/related; boundary=${boundary}`,
+      },
+      maxBodyLength: Infinity,
+      maxContentLength: Infinity,
+      timeout: 120000,
+    }
+  );
+
+  const fileId = response.data?.id;
+  if (!fileId) {
+    throw new Error("Google Drive upload failed to return a valid file ID.");
+  }
+
+  return {
+    fileId,
+    audioUrl: `https://drive.google.com/file/d/${fileId}/view`,
+  };
+}
