@@ -16,9 +16,16 @@ const execFileAsync = promisify(execFile);
  * Resolves or downloads the standalone yt-dlp binary.
  * In production/serverless (Vercel, AWS Lambda), the root filesystem (/var/task)
  * is read-only, so we MUST store downloaded binaries in os.tmpdir() (/tmp).
+ * On Linux, we use `yt-dlp_linux` which is a self-contained ELF binary with bundled
+ * Python runtime, avoiding any dependency on system `python3`.
  */
 export async function ensureYtDlpBinary(): Promise<string> {
-  const binaryName = os.platform() === "win32" ? "yt-dlp.exe" : "yt-dlp";
+  const binaryName =
+    os.platform() === "win32"
+      ? "yt-dlp.exe"
+      : os.platform() === "darwin"
+      ? "yt-dlp_macos"
+      : "yt-dlp_linux";
 
   // 1. Check local bin in workspace (e.g. during development)
   try {
@@ -41,12 +48,15 @@ export async function ensureYtDlpBinary(): Promise<string> {
     mkdirSync(tmpBinDir, { recursive: true });
   }
 
+  // Standalone binaries with embedded Python runtime
   const downloadUrl =
     os.platform() === "win32"
       ? "https://github.com/yt-dlp/yt-dlp/releases/latest/download/yt-dlp.exe"
-      : "https://github.com/yt-dlp/yt-dlp/releases/latest/download/yt-dlp";
+      : os.platform() === "darwin"
+      ? "https://github.com/yt-dlp/yt-dlp/releases/latest/download/yt-dlp_macos"
+      : "https://github.com/yt-dlp/yt-dlp/releases/latest/download/yt-dlp_linux";
 
-  console.log(`[LINK FETCHER] Downloading yt-dlp binary to ${tmpExePath} from ${downloadUrl}...`);
+  console.log(`[LINK FETCHER] Downloading standalone yt-dlp binary to ${tmpExePath} from ${downloadUrl}...`);
   const res = await axios({
     url: downloadUrl,
     method: "GET",
@@ -68,7 +78,7 @@ export async function ensureYtDlpBinary(): Promise<string> {
     await chmod(tmpExePath, 0o755);
   }
 
-  console.log(`[LINK FETCHER] yt-dlp installed successfully at ${tmpExePath}`);
+  console.log(`[LINK FETCHER] Standalone yt-dlp installed successfully at ${tmpExePath}`);
   return tmpExePath;
 }
 
