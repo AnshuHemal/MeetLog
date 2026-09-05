@@ -479,7 +479,8 @@ export async function deleteGoogleDriveFile(urlOrId: string): Promise<boolean> {
 export async function uploadBufferToGoogleDrive(
   buffer: Buffer,
   fileName: string,
-  mimeType: string = "audio/mpeg"
+  mimeType: string = "audio/mpeg",
+  onProgress?: (percent: number) => void
 ): Promise<{ audioUrl: string; fileId: string }> {
   const accessToken = await getGoogleDriveAccessToken();
   if (!accessToken) {
@@ -495,39 +496,191 @@ export async function uploadBufferToGoogleDrive(
     metadata.parents = [folderId];
   }
 
-  const boundary = "-------314159265358979323846";
-  const delimiter = `\r\n--${boundary}\r\n`;
-  const closeDelimiter = `\r\n--${boundary}--`;
+  const totalSize = buffer.length;
 
-  const multipartBody = Buffer.concat([
-    Buffer.from(
-      delimiter +
-        "Content-Type: application/json; charset=UTF-8\r\n\r\n" +
-        JSON.stringify(metadata) +
+  // For small files (<= 5MB), simple multipart upload is fast and efficient
+  if (totalSize <= 5 * 1024 * 1024) {
+    const boundary = "-------314159265358979323846";
+    const delimiter = `\r\n--${boundary}\r\n`;
+    const closeDelimiter = `\r\n--${boundary}--`;
+
+    const multipartBody = Buffer.concat([
+      Buffer.from(
         delimiter +
-        `Content-Type: ${mimeType}\r\n\r\n`
-    ),
-    buffer,
-    Buffer.from(closeDelimiter),
-  ]);
+          "Content-Type: application/json; charset=UTF-8\r\n\r\n" +
+          JSON.stringify(metadata) +
+          delimiter +
+          `Content-Type: ${mimeType}\r\n\r\n`
+      ),
+      buffer,
+      Buffer.from(closeDelimiter),
+    ]);
 
-  const response = await axios.post(
-    "https://www.googleapis.com/upload/drive/v3/files?uploadType=multipart",
-    multipartBody,
+    const response = await axios.post(
+      "https://www.googleapis.com/upload/drive/v3/files?uploadType=multipart",
+      multipartBody,
+      {
+        headers: {
+          Authorization: `Bearer ${accessToken}`,
+          "Content-Type": `multipart/related; boundary=${boundary}`,
+        },
+        maxBodyLength: Infinity,
+        maxContentLength: Infinity,
+        timeout: 180000,
+      }
+    );
+
+    const fileId = response.data?.id;
+    if (!fileId) {
+      throw new Error("Google Drive upload failed to return a valid file ID.");
+    }
+
+    onProgress?.(100);
+    return {
+      fileId,
+      audioUrl: `https://drive.google.com/file/d/${fileId}/view`,
+    };
+  }
+
+  // For larger files (> 5MB), use Google Drive's Resumable Upload protocol.
+  // This streams the file in chunks with automatic exponential-backoff retries,
+  // preventing request timeouts and network aborts on large media recordings.
+  console.log(
+    `[GDRIVE] Initiating resumable upload session for ${(totalSize / (1024 * 1024)).toFixed(1)}MB file: ${fileName}`
+  );
+
+  const initResponse = await fetch(
+    "https://www.googleapis.com/upload/drive/v3/files?uploadType=resumable",
     {
+      method: "POST",
       headers: {
         Authorization: `Bearer ${accessToken}`,
-        "Content-Type": `multipart/related; boundary=${boundary}`,
+        "Content-Type": "application/json; charset=UTF-8",
+        "X-Upload-Content-Type": mimeType,
+        "X-Upload-Content-Length": String(totalSize),
       },
-      maxBodyLength: Infinity,
-      maxContentLength: Infinity,
-      timeout: 120000,
+      body: JSON.stringify(metadata),
     }
   );
 
-  const fileId = response.data?.id;
+  if (!initResponse.ok) {
+    const errText = await initResponse.text().catch(() => "");
+    throw new Error(
+      `Google Drive resumable upload session creation failed (HTTP ${initResponse.status}): ${errText || initResponse.statusText}`
+    );
+  }
+
+  const uploadUrl = initResponse.headers.get("Location") || initResponse.headers.get("location");
+  if (!uploadUrl) {
+    throw new Error("Google Drive did not return a Location URL for resumable upload.");
+  }
+
+  // Google Drive requires chunk sizes to be multiples of 256 KB.
+  // 4MB (4 * 1024 * 1024 = 4,194,304 bytes = 16 * 256 KB) provides high throughput
+  // while ensuring each individual chunk upload completes swiftly and safely.
+  const CHUNK_SIZE = 4 * 1024 * 1024;
+  let offset = 0;
+  let fileId = "";
+
+  while (offset < totalSize) {
+    const chunkEnd = Math.min(offset + CHUNK_SIZE, totalSize) - 1;
+    const chunkLength = chunkEnd - offset + 1;
+    const chunkBuffer = buffer.subarray(offset, chunkEnd + 1);
+    const contentRange = `bytes ${offset}-${chunkEnd}/${totalSize}`;
+
+    let chunkUploaded = false;
+    let lastChunkError: any = null;
+
+    for (let attempt = 1; attempt <= 4; attempt++) {
+      try {
+        const chunkRes = await fetch(uploadUrl, {
+          method: "PUT",
+          headers: {
+            "Content-Range": contentRange,
+            "Content-Length": String(chunkLength),
+            "Content-Type": mimeType,
+          },
+          body: new Uint8Array(chunkBuffer),
+          signal: AbortSignal.timeout(180000), // 3 min timeout per 4MB chunk
+        });
+
+        const status = chunkRes.status;
+
+        if (status === 200 || status === 201) {
+          const data = (await chunkRes.json().catch(() => ({}))) as Record<string, any>;
+          fileId = data.id || "";
+          chunkUploaded = true;
+          offset = totalSize;
+          onProgress?.(100);
+          break;
+        }
+
+        if (status === 308) {
+          chunkUploaded = true;
+          offset = chunkEnd + 1;
+          const progressPercent = Math.min(99, Math.round((offset / totalSize) * 100));
+          console.log(
+            `[GDRIVE UPLOAD] Uploaded ${progressPercent}% (${(offset / (1024 * 1024)).toFixed(1)}MB / ${(totalSize / (1024 * 1024)).toFixed(1)}MB)`
+          );
+          onProgress?.(progressPercent);
+          break;
+        }
+
+        const errText = await chunkRes.text().catch(() => "");
+        throw new Error(`Google Drive returned unexpected status ${status}: ${errText}`);
+      } catch (err: any) {
+        lastChunkError = err;
+        console.warn(
+          `[GDRIVE UPLOAD RETRY] Chunk bytes ${offset}-${chunkEnd} failed on attempt ${attempt}/4: ${err.message}`
+        );
+
+        // Check current upload offset from Google Drive via query PUT
+        try {
+          const checkRes = await fetch(uploadUrl, {
+            method: "PUT",
+            headers: {
+              "Content-Range": `bytes */${totalSize}`,
+            },
+            signal: AbortSignal.timeout(15000),
+          });
+
+          if (checkRes.status === 200 || checkRes.status === 201) {
+            const data = (await checkRes.json().catch(() => ({}))) as Record<string, any>;
+            fileId = data.id || "";
+            chunkUploaded = true;
+            offset = totalSize;
+            break;
+          }
+
+          if (checkRes.status === 308) {
+            const range = checkRes.headers.get("Range") || checkRes.headers.get("range");
+            if (range) {
+              const match = range.match(/bytes=0-(\d+)/);
+              if (match) {
+                const confirmedEnd = parseInt(match[1], 10);
+                offset = confirmedEnd + 1;
+                chunkUploaded = true;
+                break;
+              }
+            }
+          }
+        } catch {}
+
+        if (attempt < 4) {
+          await new Promise((r) => setTimeout(r, attempt * 1500));
+        }
+      }
+    }
+
+    if (!chunkUploaded) {
+      throw new Error(
+        `Google Drive upload failed at byte ${offset}/${totalSize}: ${lastChunkError?.message || "Transfer aborted"}`
+      );
+    }
+  }
+
   if (!fileId) {
-    throw new Error("Google Drive upload failed to return a valid file ID.");
+    throw new Error("Google Drive resumable upload completed but no file ID was returned.");
   }
 
   return {

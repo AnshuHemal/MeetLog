@@ -196,7 +196,9 @@ export async function ingestMediaLink(
           "--audio-format",
           "mp3",
           "--audio-quality",
-          "0",
+          "128K",
+          "--postprocessor-args",
+          "ExtractAudio:-b:a 128k -ar 16000 -ac 1",
           "--ffmpeg-location",
           ffmpegPath,
           ...clientArgs,
@@ -280,7 +282,14 @@ export async function ingestMediaLink(
     // ─── 4. Upload Extracted Speech MP3 to Google Drive Storage ───────────────
     log("storage", `Saving ${(audioBuffer.length / (1024 * 1024)).toFixed(1)}MB speech audio into workspace cloud storage...`);
     const cleanFileName = `MeetLog-${(detectedTitle || "Recording").replace(/[^a-zA-Z0-9]/g, "_")}-${Date.now()}.mp3`;
-    const driveUpload = await uploadBufferToGoogleDrive(audioBuffer, cleanFileName, "audio/mpeg");
+    const driveUpload = await uploadBufferToGoogleDrive(
+      audioBuffer,
+      cleanFileName,
+      "audio/mpeg",
+      (percent) => {
+        log("storage", `Cloud storage upload progress: ${percent}%`);
+      }
+    );
 
     log("success", "Speech audio stored in cloud storage! Meeting ready for transcription.");
 
