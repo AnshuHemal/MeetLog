@@ -5,7 +5,7 @@ import { SearchPageClient } from "./_components/search-page-client";
 import type { Metadata } from "next";
 
 export const metadata: Metadata = {
-  title: "Search Transcripts & Meetings | MeetLog",
+  title: "Search Transcripts & Meetings",
   description: "Search keywords across all meetings and spoken transcripts.",
 };
 

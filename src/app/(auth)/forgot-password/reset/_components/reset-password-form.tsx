@@ -4,9 +4,9 @@ import { useState } from "react";
 import { useSearchParams } from "next/navigation";
 import Link from "next/link";
 import { motion, AnimatePresence } from "motion/react";
-import { LockKeyhole, Eye, EyeOff, RotateCcw, ShieldCheck, XCircle } from "lucide-react";
+import { LockKeyhole, RotateCcw, ShieldCheck, XCircle } from "lucide-react";
 import { Button } from "@/components/ui/button";
-import { Input } from "@/components/ui/input";
+import { PasswordInput } from "@/components/ui/password-input";
 import { Label } from "@/components/ui/label";
 import { emailOtp } from "@/lib/auth-client";
 import { FadeIn } from "@/components/motion/fade-in";
@@ -26,8 +26,6 @@ export function ResetPasswordForm() {
 
   const [password, setPassword]         = useState("");
   const [confirm, setConfirm]           = useState("");
-  const [showPassword, setShowPassword] = useState(false);
-  const [showConfirm, setShowConfirm]   = useState(false);
   const [isPending, setIsPending]       = useState(false);
   const [status, setStatus]             = useState<"idle" | "success" | "error">("idle");
   const [error, setError]               = useState<string | null>(null);
@@ -152,32 +150,19 @@ export function ResetPasswordForm() {
             {}
             <FadeIn delay={0.1} className="flex flex-col gap-1.5">
               <Label htmlFor="password">New password</Label>
-              <div className="relative">
-                <Input
-                  id="password"
-                  name="password"
-                  type={showPassword ? "text" : "password"}
-                  placeholder="••••••••"
-                  autoComplete="new-password"
-                  required
-                  disabled={isDisabled}
-                  value={password}
-                  onChange={(e) => {
-                    setPassword(e.target.value);
-                    setError(null);
-                  }}
-                  className="pr-10"
-                />
-                <button
-                  type="button"
-                  onClick={() => setShowPassword((v) => !v)}
-                  disabled={isDisabled}
-                  aria-label={showPassword ? "Hide password" : "Show password"}
-                  className="absolute right-3 top-1/2 -translate-y-1/2 text-muted-foreground transition-colors hover:text-foreground disabled:opacity-50"
-                >
-                  {showPassword ? <EyeOff className="size-4" /> : <Eye className="size-4" />}
-                </button>
-              </div>
+              <PasswordInput
+                id="password"
+                name="password"
+                placeholder="••••••••"
+                autoComplete="new-password"
+                required
+                disabled={isDisabled}
+                value={password}
+                onChange={(e) => {
+                  setPassword(e.target.value);
+                  setError(null);
+                }}
+              />
 
               {}
               <div className="h-0.5 w-full overflow-hidden rounded-full bg-border">
@@ -192,32 +177,19 @@ export function ResetPasswordForm() {
             {}
             <FadeIn delay={0.15} className="flex flex-col gap-1.5">
               <Label htmlFor="confirm">Confirm password</Label>
-              <div className="relative">
-                <Input
-                  id="confirm"
-                  name="confirm"
-                  type={showConfirm ? "text" : "password"}
-                  placeholder="••••••••"
-                  autoComplete="new-password"
-                  required
-                  disabled={isDisabled}
-                  value={confirm}
-                  onChange={(e) => {
-                    setConfirm(e.target.value);
-                    setError(null);
-                  }}
-                  className="pr-10"
-                />
-                <button
-                  type="button"
-                  onClick={() => setShowConfirm((v) => !v)}
-                  disabled={isDisabled}
-                  aria-label={showConfirm ? "Hide password" : "Show password"}
-                  className="absolute right-3 top-1/2 -translate-y-1/2 text-muted-foreground transition-colors hover:text-foreground disabled:opacity-50"
-                >
-                  {showConfirm ? <EyeOff className="size-4" /> : <Eye className="size-4" />}
-                </button>
-              </div>
+              <PasswordInput
+                id="confirm"
+                name="confirm"
+                placeholder="••••••••"
+                autoComplete="new-password"
+                required
+                disabled={isDisabled}
+                value={confirm}
+                onChange={(e) => {
+                  setConfirm(e.target.value);
+                  setError(null);
+                }}
+              />
             </FadeIn>
 
             {}

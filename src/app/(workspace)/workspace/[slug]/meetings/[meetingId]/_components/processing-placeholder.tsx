@@ -2,9 +2,21 @@
 
 import { useEffect, useState, useRef } from "react";
 import { useRouter } from "next/navigation";
-import { Loader2, RefreshCw, AudioLines, Clock, CheckCircle2, Terminal, ArrowRight } from "lucide-react";
+import { Loader2, RefreshCw, AudioLines, Clock, CheckCircle2, Terminal, ArrowRight, Ban, AlertTriangle } from "lucide-react";
 import axios from "axios";
+import { toast } from "sonner";
 import { Button } from "@/components/ui/button";
+import {
+  AlertDialog,
+  AlertDialogAction,
+  AlertDialogCancel,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogTitle,
+} from "@/components/ui/alert-dialog";
+import { cancelTranscriptionAction } from "../actions";
 import {
   PipelineTerminal,
   TerminalLogEntry,
@@ -37,6 +49,28 @@ export function ProcessingPlaceholder({
   const [isCompleted, setIsCompleted] = useState(false);
   const [progressMessage, setProgressMessage] = useState<string>("Initializing status handshake...");
   const [activeTab, setActiveTab] = useState<"stages" | "terminal">("terminal");
+  const [cancelDialogOpen, setCancelDialogOpen] = useState(false);
+  const [isCancelling, setIsCancelling] = useState(false);
+
+  const handleCancel = async () => {
+    setIsCancelling(true);
+    try {
+      const res = await cancelTranscriptionAction(meetingId, workspaceSlug);
+      if (res.success) {
+        toast.success("Transcription cancelled.");
+        isNavigatingRef.current = true;
+        window.location.replace(`/workspace/${workspaceSlug}/meetings/${meetingId}`);
+      } else {
+        toast.error(res.error || "Failed to cancel transcription.");
+        setIsCancelling(false);
+        setCancelDialogOpen(false);
+      }
+    } catch (err: any) {
+      toast.error(err.message || "Failed to cancel transcription.");
+      setIsCancelling(false);
+      setCancelDialogOpen(false);
+    }
+  };
 
   // Terminal log state
   const [logs, setLogs] = useState<TerminalLogEntry[]>(() => [
@@ -181,6 +215,24 @@ export function ProcessingPlaceholder({
           setTimeout(() => {
             window.location.replace(`/workspace/${workspaceSlug}/meetings/${meetingId}`);
           }, 1200);
+        } else if (status === "CANCELLED") {
+          isNavigatingRef.current = true;
+          if (pollInterval) clearInterval(pollInterval);
+
+          setLogs((prev) => [
+            ...prev,
+            {
+              id: `cancel-${Date.now()}`,
+              timestamp: formatTerminalTimestamp(),
+              level: "warning",
+              category: "cancelled",
+              message: "Transcription cancelled by user. Halting pipeline...",
+            },
+          ]);
+
+          setTimeout(() => {
+            window.location.replace(`/workspace/${workspaceSlug}/meetings/${meetingId}`);
+          }, 300);
         } else {
           setPollCount((c) => c + 1);
         }
@@ -369,12 +421,23 @@ export function ProcessingPlaceholder({
       )}
 
       {/* ─── Bottom Actions ────────────────────────────────────────────── */}
-      <div className="flex items-center justify-between border-t border-border pt-4">
-        <p className="text-xs text-muted-foreground">
+      <div className="flex flex-col sm:flex-row items-center justify-between gap-4 border-t border-border pt-4">
+        <p className="text-xs text-muted-foreground text-center sm:text-left">
           You can safely leave this page — transcription will continue processing in the cloud.
         </p>
 
-        <div className="flex items-center gap-3">
+        <div className="flex flex-wrap items-center gap-2.5 w-full sm:w-auto justify-end">
+          <Button
+            type="button"
+            variant="outline"
+            onClick={() => setCancelDialogOpen(true)}
+            disabled={isCompleted || isCancelling}
+            className="h-9 px-3.5 rounded-xl border-destructive/30 text-destructive hover:bg-destructive/10 hover:text-destructive text-xs font-bold gap-1.5 shadow-2xs cursor-pointer transition-all"
+          >
+            <Ban className="size-3.5" />
+            <span>Cancel Transcription</span>
+          </Button>
+
           <button
             onClick={() => router.push(`/workspace/${workspaceSlug}`)}
             className="inline-flex items-center justify-center rounded-xl text-xs font-bold border border-border bg-background hover:bg-muted h-9 px-4 transition-all shadow-2xs cursor-pointer"
@@ -389,6 +452,43 @@ export function ProcessingPlaceholder({
           </button>
         </div>
       </div>
+
+      {/* ─── Cancel Transcription Confirmation Dialog ───────────────────── */}
+      <AlertDialog open={cancelDialogOpen} onOpenChange={setCancelDialogOpen}>
+        <AlertDialogContent className="max-w-md rounded-2xl">
+          <AlertDialogHeader>
+            <AlertDialogTitle className="text-destructive flex items-center gap-2">
+              <AlertTriangle className="size-5" />
+              Cancel transcription?
+            </AlertDialogTitle>
+            <AlertDialogDescription className="text-sm text-muted-foreground">
+              This will immediately stop active AI speech recognition and synthesis for &quot;{title}&quot;. Computing workers will be released and any partial audio segments will be cleared. You can restart transcription anytime.
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel disabled={isCancelling} className="rounded-xl">
+              Keep Transcribing
+            </AlertDialogCancel>
+            <AlertDialogAction
+              onClick={(e) => {
+                e.preventDefault();
+                handleCancel();
+              }}
+              disabled={isCancelling}
+              className="bg-destructive text-destructive-foreground hover:bg-destructive/90 rounded-xl"
+            >
+              {isCancelling ? (
+                <>
+                  <Loader2 className="mr-2 size-4 animate-spin" />
+                  Cancelling...
+                </>
+              ) : (
+                "Yes, Cancel"
+              )}
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
     </div>
   );
 }

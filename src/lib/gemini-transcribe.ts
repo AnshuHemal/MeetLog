@@ -10,6 +10,11 @@ import {
 import { sliceAudioBuffer, AudioSlice } from "./audio-slicer";
 import { prisma } from "./prisma";
 import { addMeetingLog } from "./pipeline-logger";
+import {
+  registerMeetingAbortController,
+  unregisterMeetingAbortController,
+  isMeetingJobAborted,
+} from "./cancellation-manager";
 
 export interface GeminiTranscriptEntry {
   speaker_id: string;
@@ -637,93 +642,117 @@ export async function startGeminiTranscriptionJob(
   languageCode: string = "unknown",
   numSpeakers?: number
 ): Promise<{ jobId: string }> {
-  console.log(`[GEMINI 3.5] Starting high-precision transcription pipeline for meeting ${meetingId}...`);
-  addMeetingLog(meetingId, "info", "PIPELINE", `Initializing Gemini 3.5 audio intelligence pipeline...`);
+  registerMeetingAbortController(meetingId);
+  try {
+    console.log(`[GEMINI 3.5] Starting high-precision transcription pipeline for meeting ${meetingId}...`);
+    addMeetingLog(meetingId, "info", "PIPELINE", `Initializing Gemini 3.5 audio intelligence pipeline...`);
 
-  let audioBuffer = await downloadAudioBuffer(audioUrl, meetingId);
-  
-  // Check if media is video and extract speech audio
-  const { isMediaVideo, extractAudioFromVideo } = await import("./media-extractor");
-  if (isMediaVideo(audioUrl, audioBuffer)) {
-    console.log(`[GEMINI 3.5] Video container detected for meeting ${meetingId}. Extracting audio track...`);
-    addMeetingLog(
-      meetingId,
-      "audio",
-      "EXTRACTOR",
-      `Video container detected (${(audioBuffer.byteLength / (1024 * 1024)).toFixed(1)}MB)! Extracting 16kHz speech audio track...`
+    let audioBuffer = await downloadAudioBuffer(audioUrl, meetingId);
+
+    // Immediate cancellation checkpoint
+    if (isMeetingJobAborted(meetingId)) {
+      console.log(`[GEMINI 3.5] Meeting ${meetingId} cancelled. Halting.`);
+      return { jobId: `gemini_cancelled_${meetingId}` };
+    }
+    
+    // Check if media is video and extract speech audio
+    const { isMediaVideo, extractAudioFromVideo } = await import("./media-extractor");
+    if (isMediaVideo(audioUrl, audioBuffer)) {
+      console.log(`[GEMINI 3.5] Video container detected for meeting ${meetingId}. Extracting audio track...`);
+      addMeetingLog(
+        meetingId,
+        "audio",
+        "EXTRACTOR",
+        `Video container detected (${(audioBuffer.byteLength / (1024 * 1024)).toFixed(1)}MB)! Extracting 16kHz speech audio track...`
+      );
+      await prisma.meeting.update({
+        where: { id: meetingId },
+        data: {
+          progressMessage: "Extracting speech audio from video recording...",
+        },
+      }).catch(() => {});
+
+      const extracted = await extractAudioFromVideo(audioBuffer, audioUrl);
+      audioBuffer = extracted.audioBuffer;
+
+      addMeetingLog(
+        meetingId,
+        "success",
+        "EXTRACTOR",
+        `Audio track extracted successfully (${(audioBuffer.byteLength / (1024 * 1024)).toFixed(1)}MB, ready for speech chunking).`
+      );
+    }
+    
+    // 120 seconds (2 minutes) per chunk: guarantees token count stays safely under 8192 output limit
+    // and captures 100% of speech from minute 0:00 to the end without token truncation!
+    const GEMINI_CHUNK_SECONDS = 120;
+    const GEMINI_MAX_THRESHOLD = 150;
+    const OVERLAP_SECONDS = 0;
+
+    addMeetingLog(meetingId, "audio", "SLICER", `Analyzing audio stream and preparing sample-accurate 2-minute chunks...`);
+    const slices = await sliceAudioBuffer(
+      audioBuffer,
+      "meeting.mp3",
+      GEMINI_CHUNK_SECONDS,
+      GEMINI_MAX_THRESHOLD,
+      OVERLAP_SECONDS
     );
+
+    console.log(`[GEMINI 3.5] Audio prepared into ${slices.length} sample-accurate chunk(s)...`);
+    if (slices.length === 1) {
+      addMeetingLog(meetingId, "success", "PIPELINE", `Processing audio directly in 1 chunk (100% exact acoustic timestamps).`);
+    } else {
+      addMeetingLog(meetingId, "success", "SLICER", `Audio split into ${slices.length} sample-accurate chunks (2 mins each, zero drift).`);
+    }
+
     await prisma.meeting.update({
       where: { id: meetingId },
       data: {
-        progressMessage: "Extracting speech audio from video recording...",
+        progressMessage: `Transcribing audio with Google Gemini Audio Intelligence (${slices.length} chunk${slices.length > 1 ? "s" : ""})...`,
       },
-    }).catch(() => {});
+    });
 
-    const extracted = await extractAudioFromVideo(audioBuffer, audioUrl);
-    audioBuffer = extracted.audioBuffer;
+    // Process chunks in controlled batches of 2 with key pool rotation across 5 keys
+    const CONCURRENCY = 2;
+    const results: Array<{ entries: GeminiTranscriptEntry[] }> = new Array(slices.length);
 
-    addMeetingLog(
-      meetingId,
-      "success",
-      "EXTRACTOR",
-      `Audio track extracted successfully (${(audioBuffer.byteLength / (1024 * 1024)).toFixed(1)}MB, ready for speech chunking).`
-    );
-  }
-  
-  // 120 seconds (2 minutes) per chunk: guarantees token count stays safely under 8192 output limit
-  // and captures 100% of speech from minute 0:00 to the end without token truncation!
-  const GEMINI_CHUNK_SECONDS = 120;
-  const GEMINI_MAX_THRESHOLD = 150;
-  const OVERLAP_SECONDS = 0;
+    for (let i = 0; i < slices.length; i += CONCURRENCY) {
+      // Loop cancellation checkpoint
+      if (isMeetingJobAborted(meetingId)) {
+        console.log(`[GEMINI TRANSCRIBE] Meeting ${meetingId} cancelled by user. Halting loop.`);
+        addMeetingLog(meetingId, "warning", "CANCELLATION", "Transcription halted by user cancellation.");
+        return { jobId: `gemini_cancelled_${meetingId}` };
+      }
 
-  addMeetingLog(meetingId, "audio", "SLICER", `Analyzing audio stream and preparing sample-accurate 2-minute chunks...`);
-  const slices = await sliceAudioBuffer(
-    audioBuffer,
-    "meeting.mp3",
-    GEMINI_CHUNK_SECONDS,
-    GEMINI_MAX_THRESHOLD,
-    OVERLAP_SECONDS
-  );
+      const freshM = await prisma.meeting.findUnique({
+        where: { id: meetingId },
+        select: { status: true },
+      });
+      if (freshM?.status === "CANCELLED") {
+        console.log(`[GEMINI TRANSCRIBE] Meeting ${meetingId} status is CANCELLED. Halting loop.`);
+        return { jobId: `gemini_cancelled_${meetingId}` };
+      }
 
-  console.log(`[GEMINI 3.5] Audio prepared into ${slices.length} sample-accurate chunk(s)...`);
-  if (slices.length === 1) {
-    addMeetingLog(meetingId, "success", "PIPELINE", `Processing audio directly in 1 chunk (100% exact acoustic timestamps).`);
-  } else {
-    addMeetingLog(meetingId, "success", "SLICER", `Audio split into ${slices.length} sample-accurate chunks (2 mins each, zero drift).`);
-  }
+      const batch = slices.slice(i, i + CONCURRENCY);
+      if (slices.length > 1) {
+        console.log(`[GEMINI TRANSCRIBE] Processing batch ${Math.floor(i / CONCURRENCY) + 1}/${Math.ceil(slices.length / CONCURRENCY)} (chunks ${i + 1} to ${i + batch.length})...`);
+        addMeetingLog(meetingId, "ai", "BATCH", `Transcribing batch ${Math.floor(i / CONCURRENCY) + 1}/${Math.ceil(slices.length / CONCURRENCY)} (chunks ${i + 1} to ${i + batch.length})...`);
+      }
 
-  await prisma.meeting.update({
-    where: { id: meetingId },
-    data: {
-      progressMessage: `Transcribing audio with Google Gemini Audio Intelligence (${slices.length} chunk${slices.length > 1 ? "s" : ""})...`,
-    },
-  });
+      const batchResults = await Promise.all(
+        batch.map((slice) =>
+          transcribeSingleAudioSlice(slice.buffer, slice, languageCode, numSpeakers, [], meetingId)
+        )
+      );
 
-  // Process chunks in controlled batches of 2 with key pool rotation across 5 keys
-  const CONCURRENCY = 2;
-  const results: Array<{ entries: GeminiTranscriptEntry[] }> = new Array(slices.length);
+      for (let j = 0; j < batch.length; j++) {
+        results[i + j] = batchResults[j];
+      }
 
-  for (let i = 0; i < slices.length; i += CONCURRENCY) {
-    const batch = slices.slice(i, i + CONCURRENCY);
-    if (slices.length > 1) {
-      console.log(`[GEMINI TRANSCRIBE] Processing batch ${Math.floor(i / CONCURRENCY) + 1}/${Math.ceil(slices.length / CONCURRENCY)} (chunks ${i + 1} to ${i + batch.length})...`);
-      addMeetingLog(meetingId, "ai", "BATCH", `Transcribing batch ${Math.floor(i / CONCURRENCY) + 1}/${Math.ceil(slices.length / CONCURRENCY)} (chunks ${i + 1} to ${i + batch.length})...`);
+      if (i + CONCURRENCY < slices.length) {
+        await new Promise((r) => setTimeout(r, 400));
+      }
     }
-
-    const batchResults = await Promise.all(
-      batch.map((slice) =>
-        transcribeSingleAudioSlice(slice.buffer, slice, languageCode, numSpeakers, [], meetingId)
-      )
-    );
-
-    for (let j = 0; j < batch.length; j++) {
-      results[i + j] = batchResults[j];
-    }
-
-    if (i + CONCURRENCY < slices.length) {
-      await new Promise((r) => setTimeout(r, 400));
-    }
-  }
 
   // Combine entries across slices with exact global start offsets
   const allEntries: GeminiTranscriptEntry[] = [];
@@ -771,10 +800,13 @@ export async function startGeminiTranscriptionJob(
 
   addMeetingLog(meetingId, "success", "STITCHER", `Finalized ${cleanedEntries.length} total dialogue segments with 100% acoustic playback sync.`);
 
-  const jobId = `gemini_${meetingId}_${Date.now()}`;
-  (globalThis as any)[`gemini_transcription_${jobId}`] = cleanedEntries;
+    const jobId = `gemini_${meetingId}_${Date.now()}`;
+    (globalThis as any)[`gemini_transcription_${jobId}`] = cleanedEntries;
 
-  return { jobId };
+    return { jobId };
+  } finally {
+    unregisterMeetingAbortController(meetingId);
+  }
 }
 
 export function getStoredGeminiEntries(jobId: string): GeminiTranscriptEntry[] | null {

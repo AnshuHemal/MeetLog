@@ -2,7 +2,8 @@
 
 import React, { useState, useTransition } from "react";
 import Link from "next/link";
-import { Search, FileAudio, PlayCircle, Plus, AlertCircle, RefreshCw, List, LayoutGrid, Loader2, MoreHorizontal } from "lucide-react";
+import { Search, FileAudio, PlayCircle, Plus, AlertCircle, RefreshCw, List, LayoutGrid, Loader2, MoreHorizontal, Ban } from "lucide-react";
+import { toast } from "sonner";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { FadeIn } from "@/components/motion/fade-in";
@@ -15,6 +16,7 @@ import {
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
 import { useViewMode } from "@/hooks/use-view-mode";
+import { cancelTranscriptionAction } from "../[meetingId]/actions";
 
 interface Meeting {
   id: string;
@@ -53,7 +55,7 @@ function formatUploadedDateTime(createdAt: Date | string): string {
 export function MeetingsListClient({ meetings: initialMeetings, slug }: MeetingsListClientProps) {
   const [meetings, setMeetings] = useState(initialMeetings);
   const [search, setSearch] = useState("");
-  const [statusFilter, setStatusFilter] = useState<"ALL" | "COMPLETED" | "TRANSCRIBING" | "FAILED">("ALL");
+  const [statusFilter, setStatusFilter] = useState<"ALL" | "COMPLETED" | "TRANSCRIBING" | "FAILED" | "CANCELLED">("ALL");
   const [viewMode, setViewMode] = useViewMode("grid");
   const [, startTransition] = useTransition();
   const workspace = useWorkspaceSafe();
@@ -61,6 +63,22 @@ export function MeetingsListClient({ meetings: initialMeetings, slug }: Meetings
 
   const handleMeetingDeleted = (meetingId: string) => {
     setMeetings((prev) => prev.filter((m) => m.id !== meetingId));
+  };
+
+  const handleCancelMeeting = async (meetingId: string, title: string) => {
+    try {
+      const res = await cancelTranscriptionAction(meetingId, slug);
+      if (res.success) {
+        toast.success(`Transcription cancelled for "${title}".`);
+        setMeetings((prev) =>
+          prev.map((m) => (m.id === meetingId ? { ...m, status: "CANCELLED" } : m))
+        );
+      } else {
+        toast.error(res.error || "Failed to cancel transcription.");
+      }
+    } catch (err: any) {
+      toast.error(err.message || "Failed to cancel transcription.");
+    }
   };
 
   const filteredMeetings = meetings.filter((meeting) => {
@@ -109,7 +127,7 @@ export function MeetingsListClient({ meetings: initialMeetings, slug }: Meetings
         <div className="flex items-center gap-3">
           {}
           <div className="flex flex-wrap items-center gap-1.5 bg-muted p-1 rounded-lg">
-            {(["ALL", "COMPLETED", "TRANSCRIBING", "FAILED"] as const).map((filter) => (
+            {(["ALL", "COMPLETED", "TRANSCRIBING", "FAILED", "CANCELLED"] as const).map((filter) => (
               <button
                 key={filter}
                 onClick={() => setStatusFilter(filter)}
@@ -230,6 +248,11 @@ export function MeetingsListClient({ meetings: initialMeetings, slug }: Meetings
                         Failed
                       </span>
                     )}
+                    {meeting.status === "CANCELLED" && (
+                      <span className="inline-flex items-center rounded-full bg-amber-500/10 px-2.5 py-0.5 text-xs font-semibold text-amber-600 dark:text-amber-400">
+                        Cancelled
+                      </span>
+                    )}
                   </div>
 
                   <div className="flex items-center gap-1.5">
@@ -248,6 +271,13 @@ export function MeetingsListClient({ meetings: initialMeetings, slug }: Meetings
                         </Link>
                       </Button>
                     )}
+                    {meeting.status === "CANCELLED" && (
+                      <Button variant="outline" size="sm" asChild>
+                        <Link href={`/workspace/${slug}/meetings/${meeting.id}`}>
+                          <Ban className="mr-1.5 size-3.5 text-amber-500" /> View Status
+                        </Link>
+                      </Button>
+                    )}
                     {meeting.status === "FAILED" && (
                       <div className="flex items-center text-xs text-destructive gap-1">
                         <AlertCircle className="size-3.5" />
@@ -255,19 +285,27 @@ export function MeetingsListClient({ meetings: initialMeetings, slug }: Meetings
                       </div>
                     )}
 
-                    {canDelete && (
-                      <DropdownMenu>
-                        <DropdownMenuTrigger asChild>
-                          <Button
-                            variant="ghost"
-                            size="icon"
-                            className="size-8 text-muted-foreground hover:text-foreground"
-                            aria-label="Meeting actions"
+                    <DropdownMenu>
+                      <DropdownMenuTrigger asChild>
+                        <Button
+                          variant="ghost"
+                          size="icon"
+                          className="size-8 text-muted-foreground hover:text-foreground"
+                          aria-label="Meeting actions"
+                        >
+                          <MoreHorizontal className="size-4" />
+                        </Button>
+                      </DropdownMenuTrigger>
+                      <DropdownMenuContent align="end" className="w-44">
+                        {(meeting.status === "TRANSCRIBING" || meeting.status === "UPLOADED") && (
+                          <DropdownMenuItem
+                            onClick={() => handleCancelMeeting(meeting.id, meeting.title)}
+                            className="text-destructive focus:text-destructive focus:bg-destructive/10 cursor-pointer"
                           >
-                            <MoreHorizontal className="size-4" />
-                          </Button>
-                        </DropdownMenuTrigger>
-                        <DropdownMenuContent align="end" className="w-44">
+                            <Ban className="mr-2 size-4" /> Cancel Job
+                          </DropdownMenuItem>
+                        )}
+                        {canDelete && (
                           <DropdownMenuItem asChild>
                             <MeetingDeleteButton
                               meetingId={meeting.id}
@@ -278,9 +316,9 @@ export function MeetingsListClient({ meetings: initialMeetings, slug }: Meetings
                               onDeleted={() => handleMeetingDeleted(meeting.id)}
                             />
                           </DropdownMenuItem>
-                        </DropdownMenuContent>
-                      </DropdownMenu>
-                    )}
+                        )}
+                      </DropdownMenuContent>
+                    </DropdownMenu>
                   </div>
                 </div>
               </div>
@@ -292,6 +330,7 @@ export function MeetingsListClient({ meetings: initialMeetings, slug }: Meetings
               const isCompleted = meeting.status === "COMPLETED";
               const isTranscribing = meeting.status === "TRANSCRIBING" || meeting.status === "UPLOADED";
               const isFailed = meeting.status === "FAILED";
+              const isCancelled = meeting.status === "CANCELLED";
 
               return (
                 <div
@@ -320,11 +359,16 @@ export function MeetingsListClient({ meetings: initialMeetings, slug }: Meetings
                             Failed
                           </span>
                         )}
+                        {isCancelled && (
+                          <span className="inline-flex items-center rounded-full bg-amber-500/10 px-2.5 py-0.5 text-xs font-semibold text-amber-600 dark:text-amber-400">
+                            Cancelled
+                          </span>
+                        )}
                       </div>
                     </div>
 
                     <div className="mt-4">
-                      {(isCompleted || isTranscribing) ? (
+                      {(isCompleted || isTranscribing || isCancelled) ? (
                         <Link
                           href={`/workspace/${slug}/meetings/${meeting.id}`}
                           className="font-bold text-foreground hover:text-primary transition-colors text-sm sm:text-base line-clamp-2 leading-snug"
@@ -347,7 +391,7 @@ export function MeetingsListClient({ meetings: initialMeetings, slug }: Meetings
                     <span className="text-xs text-muted-foreground font-semibold">
                       {formatDuration(meeting.durationSeconds)}
                     </span>
-                    {(isCompleted || isTranscribing) && (
+                    {(isCompleted || isTranscribing || isCancelled) && (
                       <Button variant="ghost" size="sm" className="h-8 text-xs px-2.5 rounded-lg group-hover:bg-primary group-hover:text-primary-foreground transition-all shrink-0 cursor-pointer border border-border group-hover:border-primary" asChild>
                         <Link href={`/workspace/${slug}/meetings/${meeting.id}`}>
                           {isCompleted ? "Open Viewer" : "View Status"}

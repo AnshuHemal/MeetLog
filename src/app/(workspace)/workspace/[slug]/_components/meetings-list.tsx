@@ -64,7 +64,7 @@ export function MeetingsList({ initialMeetings, workspaceSlug }: MeetingsListPro
         
         if (!active) return;
         
-        if (status === "COMPLETED" || status === "FAILED") {
+        if (status === "COMPLETED" || status === "FAILED" || status === "CANCELLED") {
           setMeetings((prev) =>
             prev.map((m) => (m.id === id ? { ...m, status } : m))
           );
@@ -203,15 +203,22 @@ export function MeetingsList({ initialMeetings, workspaceSlug }: MeetingsListPro
                       Failed
                     </span>
                   )}
+                  {meeting.status === "CANCELLED" && (
+                    <span className="inline-flex items-center rounded-full bg-amber-500/10 px-2.5 py-0.5 text-xs font-semibold text-amber-600 dark:text-amber-400">
+                      Cancelled
+                    </span>
+                  )}
                 </div>
 
-                {(meeting.status === "COMPLETED" || meeting.status === "TRANSCRIBING" || meeting.status === "UPLOADED") && (
+                {(meeting.status === "COMPLETED" || meeting.status === "TRANSCRIBING" || meeting.status === "UPLOADED" || meeting.status === "CANCELLED") && (
                   <Button variant="outline" size="sm" asChild>
                     <Link href={`/workspace/${workspaceSlug}/meetings/${meeting.id}`}>
                       {meeting.status === "COMPLETED" ? (
                         <>
                           <PlayCircle className="mr-1.5 size-4" /> View
                         </>
+                      ) : meeting.status === "CANCELLED" ? (
+                        <>View Status</>
                       ) : (
                         <>
                           <Loader2 className="mr-1.5 size-4 animate-spin text-primary" /> View Status
@@ -237,6 +244,7 @@ export function MeetingsList({ initialMeetings, workspaceSlug }: MeetingsListPro
             const isTranscribing = meeting.status === "TRANSCRIBING";
             const isQueued = meeting.status === "UPLOADED";
             const isFailed = meeting.status === "FAILED";
+            const isCancelled = meeting.status === "CANCELLED";
 
             return (
               <div
@@ -270,11 +278,16 @@ export function MeetingsList({ initialMeetings, workspaceSlug }: MeetingsListPro
                           Failed
                         </span>
                       )}
+                      {isCancelled && (
+                        <span className="inline-flex items-center rounded-full bg-amber-500/10 px-2.5 py-0.5 text-xs font-semibold text-amber-600 dark:text-amber-400">
+                          Cancelled
+                        </span>
+                      )}
                     </div>
                   </div>
 
                   <div className="mt-4">
-                    {(isCompleted || isTranscribing || isQueued) ? (
+                    {(isCompleted || isTranscribing || isQueued || isCancelled) ? (
                       <Link
                         href={`/workspace/${workspaceSlug}/meetings/${meeting.id}`}
                         className="font-bold text-foreground hover:text-primary transition-colors text-sm sm:text-base line-clamp-2 leading-snug"
@@ -297,7 +310,7 @@ export function MeetingsList({ initialMeetings, workspaceSlug }: MeetingsListPro
                   <span className="text-xs text-muted-foreground font-semibold">
                     {formatDuration(meeting.durationSeconds)}
                   </span>
-                  {(isCompleted || isTranscribing || isQueued) && (
+                  {(isCompleted || isTranscribing || isQueued || isCancelled) && (
                     <Button variant="ghost" size="sm" className="h-8 text-xs px-2.5 rounded-lg group-hover:bg-primary group-hover:text-primary-foreground transition-all shrink-0 cursor-pointer border border-border group-hover:border-primary" asChild>
                       <Link href={`/workspace/${workspaceSlug}/meetings/${meeting.id}`}>
                         {isCompleted ? "Open Viewer" : "View Status"}

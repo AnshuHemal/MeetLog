@@ -157,6 +157,7 @@ enum MeetingStatus {
   TRANSCRIBING
   COMPLETED
   FAILED
+  CANCELLED
 }
 
 model TranscriptSegment {

@@ -181,6 +181,17 @@ export async function processCompletedTranscription(meetingId: string) {
 
     addMeetingLog(meetingId, "success", "TRANSCRIPT", `Total combined transcript entries: ${combinedEntries.length}`);
 
+    // Cancellation checkpoint: verify meeting has not been cancelled before writing database entries
+    const freshMeetingCheck = await prisma.meeting.findUnique({
+      where: { id: meetingId },
+      select: { status: true },
+    });
+    if (freshMeetingCheck?.status === "CANCELLED") {
+      log(`[TRANSCRIPTION PROCESSOR] Meeting ${meetingId} was cancelled by user. Discarding segments and aborting.`);
+      addMeetingLog(meetingId, "warning", "CANCELLATION", "Transcription results discarded due to user cancellation.");
+      return;
+    }
+
     await updateProgressMessage(meetingId, "Formatting and saving transcript entries to database...");
     addMeetingLog(meetingId, "storage", "DATABASE", `Writing ${combinedEntries.length} transcript segments and speaker labels to database...`);
     await writeTranscriptSegments(meetingId, combinedEntries);

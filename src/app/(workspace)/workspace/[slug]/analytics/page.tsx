@@ -6,7 +6,7 @@ import { WorkspaceTopbar } from "../_components/workspace-topbar";
 import type { Metadata } from "next";
 
 export const metadata: Metadata = {
-  title: "Workspace Intelligence & Analytics | MeetLog",
+  title: "Workspace Intelligence & Analytics",
   description: "Gain deeper insights into speaking times, action completion rates, and meeting patterns.",
 };
 

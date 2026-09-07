@@ -520,3 +520,84 @@ export async function syncMeetingDurationAction(
     return { success: false };
   }
 }
+
+export async function cancelTranscriptionAction(
+  meetingId: string,
+  workspaceSlug: string
+) {
+  const user = await requireUser();
+
+  const membership = await prisma.workspaceMember.findFirst({
+    where: { userId: user.id, workspace: { slug: workspaceSlug } },
+  });
+  if (!membership) {
+    return { success: false, error: "Not a member of this workspace." };
+  }
+
+  const meeting = await prisma.meeting.findUnique({ where: { id: meetingId } });
+  if (!meeting) {
+    return { success: false, error: "Meeting not found." };
+  }
+  if (meeting.workspaceId !== membership.workspaceId) {
+    return { success: false, error: "Meeting does not belong to this workspace." };
+  }
+
+  if (meeting.status === "COMPLETED") {
+    return { success: false, error: "Transcription has already completed." };
+  }
+
+  // Abort active in-memory task if running
+  const { cancelMeetingJob } = await import("@/lib/cancellation-manager");
+  cancelMeetingJob(meetingId);
+
+  // Clear any partial segments and update status to CANCELLED
+  await prisma.$transaction([
+    prisma.transcriptSegment.deleteMany({ where: { meetingId } }),
+    prisma.meeting.update({
+      where: { id: meetingId },
+      data: {
+        status: "CANCELLED",
+        progressMessage: "Transcription was cancelled by user.",
+        lastError: "Cancelled by user",
+        nextRetryAt: null,
+      },
+    }),
+  ]);
+
+  const { addMeetingLog } = await import("@/lib/pipeline-logger");
+  addMeetingLog(
+    meetingId,
+    "warning",
+    "CANCELLATION",
+    `Transcription cancelled by user (${user.name || user.email}).`
+  );
+
+  revalidatePath(`/workspace/${workspaceSlug}`);
+  revalidatePath(`/workspace/${workspaceSlug}/meetings`);
+  revalidatePath(`/workspace/${workspaceSlug}/meetings/${meetingId}`);
+  return { success: true };
+}
+
+export async function getActiveTranscriptionsAction(workspaceSlug: string) {
+  const user = await requireUser();
+  const membership = await prisma.workspaceMember.findFirst({
+    where: { userId: user.id, workspace: { slug: workspaceSlug } },
+  });
+  if (!membership) return [];
+
+  const meetings = await prisma.meeting.findMany({
+    where: {
+      workspaceId: membership.workspaceId,
+      status: "TRANSCRIBING",
+    },
+    select: {
+      id: true,
+      title: true,
+      progressMessage: true,
+      createdAt: true,
+    },
+    orderBy: { createdAt: "desc" },
+  });
+  return meetings;
+}
+

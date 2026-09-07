@@ -5,7 +5,7 @@ import { IntegrationsPageClient } from "./_components/integrations-page-client";
 import type { Metadata } from "next";
 
 export const metadata: Metadata = {
-  title: "Integrations | MeetLog",
+  title: "Integrations",
   description: "Connect MeetLog to Slack, Jira, Linear, and Notion.",
 };
 

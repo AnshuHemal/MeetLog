@@ -101,7 +101,7 @@ export async function notifyMeetingFailed(
 
   await sendEmail({
     to: owner.email,
-    subject: `Transcription failed: "${meeting.title}" — ${siteConfig.name}`,
+    subject: `Transcription failed: "${meeting.title}"`,
     html,
   });
 

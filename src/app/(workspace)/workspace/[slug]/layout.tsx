@@ -6,6 +6,7 @@ import { WorkspaceProvider } from "@/components/providers/workspace-provider";
 import { MobileSidebarProvider } from "@/components/providers/mobile-sidebar-provider";
 import type { WorkspaceRole } from "@/generated/prisma/enums";
 import { GlobalShortcutsProvider } from "@/components/shared/global-shortcuts-provider";
+import { GlobalTranscriptionDock } from "@/components/shared/global-transcription-dock";
 
 interface WorkspaceLayoutProps {
   children: React.ReactNode;
@@ -79,6 +80,7 @@ export default async function WorkspaceLayout({
               {children}
             </div>
           </div>
+          <GlobalTranscriptionDock workspaceSlug={workspace.slug} />
         </GlobalShortcutsProvider>
       </MobileSidebarProvider>
     </WorkspaceProvider>

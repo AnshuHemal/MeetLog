@@ -13,13 +13,6 @@ interface RouteParams {
 export async function GET(req: NextRequest, { params }: RouteParams) {
   const { meetingId } = await params;
 
-  if (processingJobs.has(meetingId)) {
-    return NextResponse.json({
-      status: "TRANSCRIBING",
-      logs: getMeetingLogs(meetingId),
-    });
-  }
-
   try {
     const meeting = await prisma.meeting.findUnique({
       where: { id: meetingId },
@@ -30,9 +23,18 @@ export async function GET(req: NextRequest, { params }: RouteParams) {
     }
 
     if (meeting.status !== "TRANSCRIBING") {
+      processingJobs.delete(meetingId);
       return NextResponse.json({
         status: meeting.status,
         progressMessage: meeting.progressMessage,
+        logs: getMeetingLogs(meetingId),
+      });
+    }
+
+    if (processingJobs.has(meetingId)) {
+      return NextResponse.json({
+        status: "TRANSCRIBING",
+        progressMessage: meeting.progressMessage || "Processing transcription pipeline...",
         logs: getMeetingLogs(meetingId),
       });
     }

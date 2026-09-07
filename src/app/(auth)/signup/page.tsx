@@ -11,7 +11,7 @@ export const metadata: Metadata = {
   description: `Create your free ${siteConfig.name} account. No credit card required. Set up your workspace and start shipping in minutes.`,
   robots: { index: false, follow: false },
   openGraph: {
-    title: `Sign up free — ${siteConfig.name}`,
+    title: `Sign up free`,
     description: `Create your free ${siteConfig.name} account. No credit card required.`,
     url: `${siteConfig.url}/signup`,
   },

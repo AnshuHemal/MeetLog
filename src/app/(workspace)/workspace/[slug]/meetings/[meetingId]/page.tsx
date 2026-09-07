@@ -6,6 +6,7 @@ import { WorkspaceTopbar } from "../../_components/workspace-topbar";
 import { MeetingViewerClient } from "./_components/meeting-viewer-client";
 import { ProcessingPlaceholder } from "./_components/processing-placeholder";
 import { FailedMeetingView } from "./_components/failed-meeting-view";
+import { CancelledMeetingView } from "./_components/cancelled-meeting-view";
 
 export const dynamic = "force-dynamic";
 export const revalidate = 0;
@@ -82,6 +83,26 @@ export default async function MeetingPage({ params }: MeetingPageProps) {
             workspaceSlug={slug}
             lastError={meeting.lastError}
             retryCount={meeting.retryCount}
+          />
+        </main>
+      </div>
+    );
+  }
+
+  if (meeting.status === "CANCELLED") {
+    return (
+      <div className="flex flex-1 flex-col overflow-y-auto">
+        <WorkspaceTopbar
+          workspaceName={membership.workspace.name}
+          workspaceSlug={slug}
+          pageTitle={meeting.title}
+        />
+        <main className="flex-1 flex items-center justify-center p-6">
+          <CancelledMeetingView
+            meetingId={meetingId}
+            workspaceSlug={slug}
+            title={meeting.title}
+            durationSeconds={meeting.durationSeconds}
           />
         </main>
       </div>

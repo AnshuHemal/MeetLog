@@ -8,7 +8,7 @@ import { WorkspaceCard } from "./_components/workspace-card";
 import { Plus, LayoutGrid } from "lucide-react";
 import { Button } from "@/components/ui/button";
 
-export const metadata: Metadata = { title: `Choose a workspace — ${siteConfig.name}` };
+export const metadata: Metadata = { title: `Choose a workspace` };
 
 export default async function DashboardPage() {
   const user = await requireUser();

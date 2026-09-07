@@ -5,7 +5,7 @@ import { ProvisionerPageClient } from "./_components/provisioner-client";
 import type { Metadata } from "next";
 
 export const metadata: Metadata = {
-  title: "Sarvam Key Provisioner | MeetLog",
+  title: "Sarvam Key Provisioner",
   description: "Auto-provision Sarvam AI API keys using temporary emails and automated signup.",
 };
 

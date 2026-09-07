@@ -12,7 +12,7 @@ export const metadata: Metadata = {
   description: `Log in to your ${siteConfig.name} account and get back to shipping. Access your workspace, boards, and issues instantly.`,
   robots: { index: false, follow: false },
   openGraph: {
-    title: `Log in — ${siteConfig.name}`,
+    title: `Log in`,
     description: `Log in to your ${siteConfig.name} account.`,
     url: `${siteConfig.url}/login`,
   },
