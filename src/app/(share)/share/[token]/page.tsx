@@ -60,7 +60,7 @@ export default async function SharePage({ params }: SharePageProps) {
           <span className="text-[10px] font-bold bg-primary/10 text-primary px-2.5 py-0.5 rounded-full border border-primary/20">SHARED VIEW</span>
         </div>
         <div className="flex items-center gap-4">
-          <div className="text-2xs text-muted-foreground font-mono hidden sm:block">
+          <div className="text-[11px] text-muted-foreground font-mono hidden sm:block">
             Public access view-only transcript
           </div>
           <ThemeToggle />

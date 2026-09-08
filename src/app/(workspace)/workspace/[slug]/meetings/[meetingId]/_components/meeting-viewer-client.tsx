@@ -1,15 +1,14 @@
 "use client";
 
 import React, { useState, useRef, useEffect, useMemo } from "react";
-import { Play, Pause, ChevronLeft, Volume2, Volume1, VolumeX, Search, Edit2, Check, User, ListTodo, FileText, PieChart, Loader2, RotateCcw, RotateCw, Compass, Mail, Copy, Share, Globe, Lock, Send, Bot, Highlighter, MessageSquare, Trash2, Sparkles, Scissors, Download, Video } from "lucide-react";
+import { Play, Pause, ChevronLeft, Volume2, Volume1, VolumeX, Search, Edit2, Check, User, ListTodo, FileText, Loader2, RotateCcw, RotateCw, Compass, Mail, Copy, Share, Globe, Lock, Send, Bot, Highlighter, MessageSquare, Trash2, Sparkles, Scissors, Download, Video } from "lucide-react";
 import Link from "next/link";
 import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
-import { renameSpeakerAction, editSegmentAction, toggleActionItemAction, draftMeetingEmailAction, toggleMeetingPublicAction, askMeetingAIAction, clearMeetingChatAction, updateSegmentAnnotationAction, analyzeMeetingSentimentAction, pingUserPresenceAction, syncMeetingDurationAction, retranscribeMeetingAction, generateSummaryAction } from "../actions";
-import { exportToSlackAction, exportToJiraAction, exportToLinearAction } from "../export-actions";
+import { renameSpeakerAction, editSegmentAction, toggleActionItemAction, draftMeetingEmailAction, toggleMeetingPublicAction, askMeetingAIAction, clearMeetingChatAction, updateSegmentAnnotationAction, pingUserPresenceAction, syncMeetingDurationAction, retranscribeMeetingAction, generateSummaryAction } from "../actions";
 import { AudioSnippetClipperModal } from "@/components/meetings/audio-snippet-clipper";
 import { MeetingExportModal } from "@/components/meetings/meeting-export-modal";
 import { ModernWaveformVisualizer } from "@/components/meetings/modern-waveform-visualizer";
@@ -237,64 +236,6 @@ export function MeetingViewerClient({
   const [emailDraft, setEmailDraft] = useState("");
   const [isCopying, setIsCopying] = useState(false);
   const [draftLoading, setDraftLoading] = useState(false);
-
-  const [isSlackExporting, setIsSlackExporting] = useState(false);
-  const [isJiraExporting, setIsJiraExporting] = useState(false);
-  const [isLinearExporting, setIsLinearExporting] = useState(false);
-  const [exportToast, setExportToast] = useState<{ type: "success" | "error"; message: string } | null>(null);
-
-  const triggerExportToast = (type: "success" | "error", message: string) => {
-    setExportToast({ type, message });
-    setTimeout(() => setExportToast(null), 4000);
-  };
-
-  const handleSlackExport = async () => {
-    setIsSlackExporting(true);
-    try {
-      const res = await exportToSlackAction(meeting.id, workspaceSlug);
-      if (res.success) {
-        triggerExportToast("success", "Successfully posted meeting summary and action items to Slack!");
-      } else {
-        triggerExportToast("error", res.error || "Failed to export to Slack.");
-      }
-    } catch (e: any) {
-      triggerExportToast("error", e.message || "An unexpected error occurred.");
-    } finally {
-      setIsSlackExporting(false);
-    }
-  };
-
-  const handleJiraExport = async () => {
-    setIsJiraExporting(true);
-    try {
-      const res = await exportToJiraAction(meeting.id, workspaceSlug);
-      if (res.success) {
-        triggerExportToast("success", `Successfully created ${res.created?.length || 0} issues in Jira!`);
-      } else {
-        triggerExportToast("error", res.error || "Failed to export to Jira.");
-      }
-    } catch (e: any) {
-      triggerExportToast("error", e.message || "An unexpected error occurred.");
-    } finally {
-      setIsJiraExporting(false);
-    }
-  };
-
-  const handleLinearExport = async () => {
-    setIsLinearExporting(true);
-    try {
-      const res = await exportToLinearAction(meeting.id, workspaceSlug);
-      if (res.success) {
-        triggerExportToast("success", `Successfully created issues in Linear!`);
-      } else {
-        triggerExportToast("error", res.error || "Failed to export to Linear.");
-      }
-    } catch (e: any) {
-      triggerExportToast("error", e.message || "An unexpected error occurred.");
-    } finally {
-      setIsLinearExporting(false);
-    }
-  };
 
   const [isPublic, setIsPublic] = useState(meeting.isPublic || false);
   const [shareToken, setShareToken] = useState(meeting.shareToken || null);
@@ -674,27 +615,6 @@ export function MeetingViewerClient({
     }
   };
 
-  const [isSentimentLoading, setIsSentimentLoading] = useState(false);
-  const [sentimentDone, setSentimentDone] = useState(
-    () => segments.some((s) => s.sentiment != null)
-  );
-
-  const handleAnalyzeSentiment = async () => {
-    if (isSentimentLoading) return;
-    setIsSentimentLoading(true);
-    try {
-      const result = await analyzeMeetingSentimentAction(meeting.id, workspaceSlug);
-      if (result.success) {
-        window.location.reload();
-      }
-    } catch (e) {
-      console.error("Sentiment analysis failed", e);
-    } finally {
-      setIsSentimentLoading(false);
-      setSentimentDone(true);
-    }
-  };
-
   const transcriptContainerRef = useRef<HTMLDivElement>(null);
   const [autoScroll, setAutoScroll] = useState(true);
 
@@ -755,51 +675,6 @@ export function MeetingViewerClient({
     }
     return bars;
   }, [segments, audioDuration, maxSegmentDuration, meeting.durationSeconds]);
-
-  const speakerAnalytics = useMemo(() => {
-    const uniqueIds = Array.from(new Set(segments.map((s) => s.speakerId)));
-    const totalDuration = segments.reduce((acc, s) => acc + (s.endTime - s.startTime), 0) || 1;
-
-    return uniqueIds.map((id) => {
-      const speakerSegs = segments.filter((s) => s.speakerId === id);
-      const duration = speakerSegs.reduce((acc, s) => acc + (s.endTime - s.startTime), 0);
-      const percentage = Math.round((duration / totalDuration) * 100);
-      const wordCount = speakerSegs.reduce((acc, s) => acc + s.text.split(/\s+/).length, 0);
-      const segCount = speakerSegs.length;
-
-      const positive = speakerSegs.filter((s) => s.sentiment === "positive").length;
-      const negative = speakerSegs.filter((s) => s.sentiment === "negative").length;
-      const neutral = speakerSegs.filter((s) => s.sentiment === "neutral").length;
-      const sentimentTotal = positive + negative + neutral || 1;
-
-      return {
-        speakerId: id,
-        name: speakerMap[id] || id,
-        colors: getSpeakerColor(id),
-        duration,
-        percentage,
-        wordCount,
-        segCount,
-        sentiment: {
-          positive: Math.round((positive / sentimentTotal) * 100),
-          negative: Math.round((negative / sentimentTotal) * 100),
-          neutral: Math.round((neutral / sentimentTotal) * 100),
-          raw: { positive, negative, neutral },
-        },
-      };
-    });
-  }, [segments, speakerMap]);
-
-  const meetingPulse = useMemo(() => {
-    const withSentiment = segments.filter((s) => s.sentiment);
-    if (withSentiment.length === 0) return null;
-    const pos = withSentiment.filter((s) => s.sentiment === "positive").length;
-    const neg = withSentiment.filter((s) => s.sentiment === "negative").length;
-    const ratio = pos / (pos + neg + 1);
-    if (ratio > 0.6) return { label: "Highly Productive", color: "emerald", icon: "🚀" };
-    if (ratio > 0.4) return { label: "Well Balanced", color: "sky", icon: "⚖️" };
-    return { label: "Needs Attention", color: "rose", icon: "⚠️" };
-  }, [segments]);
 
   const filteredSegments = useMemo(() => {
     const seen = new Set<string>();
@@ -1065,12 +940,6 @@ export function MeetingViewerClient({
             <TabsTrigger value="actions" className="text-[10px] sm:text-[11px] lg:text-xs font-semibold flex items-center justify-center gap-1 h-7 px-1 sm:px-1.5 flex-1 shrink-0 select-none whitespace-nowrap">
               <ListTodo className="size-3.5" /> Actions
             </TabsTrigger>
-            <TabsTrigger value="analytics" className="text-[10px] sm:text-[11px] lg:text-xs font-semibold flex items-center justify-center gap-1 h-7 px-1 sm:px-1.5 flex-1 shrink-0 select-none whitespace-nowrap">
-              <PieChart className="size-3.5" /> Stats
-            </TabsTrigger>
-            <TabsTrigger value="export" className="text-[10px] sm:text-[11px] lg:text-xs font-semibold flex items-center justify-center gap-1 h-7 px-1 sm:px-1.5 flex-1 shrink-0 select-none whitespace-nowrap">
-              <Share className="size-3.5" /> Export
-            </TabsTrigger>
           </TabsList>
         </div>
 
@@ -1122,11 +991,16 @@ export function MeetingViewerClient({
         {/* ASK AI TAB */}
         <TabsContent value="ask-ai" className="flex-1 flex flex-col overflow-hidden m-0 focus-visible:ring-0">
           {/* Chat Header Bar */}
-          <div className="px-4 py-2 border-b border-border/60 bg-card/50 flex items-center justify-between shrink-0">
+          <div className="px-3.5 py-2 border-b border-border/60 bg-card/50 flex items-center justify-between shrink-0">
             <div className="flex items-center gap-2">
-              <div className="size-2 rounded-full bg-emerald-500 animate-pulse" />
-              <span className="text-xs font-semibold text-foreground">AI Meeting Copilot</span>
-              <span className="text-3xs text-muted-foreground font-mono bg-muted/80 px-1.5 py-0.5 rounded">Gemini</span>
+              <div className="relative flex size-2 items-center justify-center">
+                <span className="absolute inline-flex h-full w-full animate-ping rounded-full bg-emerald-400/70 opacity-75" />
+                <span className="relative inline-flex size-1.5 rounded-full bg-emerald-500" />
+              </div>
+              <span className="text-xs font-semibold text-foreground tracking-tight">AI Meeting Copilot</span>
+              <span className="inline-flex items-center rounded-full border border-border/70 bg-muted/60 px-2 py-0.5 text-[10px] font-medium text-muted-foreground leading-none tracking-wide select-none">
+                Gemini
+              </span>
             </div>
             {chatMessages.length > 1 && !isReadOnly && (
               <Button
@@ -1134,10 +1008,10 @@ export function MeetingViewerClient({
                 size="sm"
                 onClick={handleClearChat}
                 disabled={isClearingChat || chatLoading}
-                className="h-6 px-2 text-3xs text-muted-foreground hover:text-destructive hover:bg-destructive/10 cursor-pointer transition-colors"
+                className="h-6 px-2 text-[11px] font-medium text-muted-foreground hover:text-destructive hover:bg-destructive/10 cursor-pointer transition-colors gap-1"
                 title="Clear conversation history"
               >
-                {isClearingChat ? <Loader2 className="size-3 animate-spin mr-1" /> : <Trash2 className="size-3 mr-1" />}
+                {isClearingChat ? <Loader2 className="size-3 animate-spin" /> : <Trash2 className="size-3" />}
                 Clear History
               </Button>
             )}
@@ -1156,7 +1030,7 @@ export function MeetingViewerClient({
                 >
                   {/* Avatar */}
                   <div
-                    className={`size-7 rounded-lg flex items-center justify-center shrink-0 border text-3xs font-bold font-mono ${
+                    className={`size-7 rounded-lg flex items-center justify-center shrink-0 border text-xs font-semibold ${
                       isUser
                         ? "bg-muted text-muted-foreground border-border/80"
                         : "bg-primary/10 text-primary border-primary/20"
@@ -1265,7 +1139,7 @@ export function MeetingViewerClient({
                               setCopiedMsgIndex(index);
                               setTimeout(() => setCopiedMsgIndex(null), 2000);
                             }}
-                            className="text-3xs text-muted-foreground hover:text-foreground flex items-center gap-1 px-1.5 py-0.5 rounded hover:bg-muted/60 transition-colors cursor-pointer"
+                            className="text-[11px] font-medium text-muted-foreground hover:text-foreground flex items-center gap-1 px-1.5 py-0.5 rounded hover:bg-muted/60 transition-colors cursor-pointer"
                             title="Copy response"
                           >
                             {copiedMsgIndex === index ? (
@@ -1291,7 +1165,7 @@ export function MeetingViewerClient({
             {/* Suggested Prompts on First Load */}
             {chatMessages.length <= 1 && (
               <div className="pt-2 px-1 space-y-2">
-                <p className="text-2xs font-semibold uppercase tracking-wider text-muted-foreground flex items-center gap-1.5">
+                <p className="text-[11px] font-semibold uppercase tracking-wider text-muted-foreground flex items-center gap-1.5">
                   <Sparkles className="size-3 text-primary" /> Suggested Questions
                 </p>
                 <div className="flex flex-wrap gap-1.5">
@@ -1469,271 +1343,6 @@ export function MeetingViewerClient({
           )}
         </TabsContent>
 
-        {}
-        <TabsContent value="analytics" className="flex-1 overflow-y-auto focus-visible:ring-0 m-0">
-          <div className="p-5 space-y-5">
-
-            {}
-            <div className="flex items-center justify-between">
-              <div>
-                <h3 className="text-base font-bold text-foreground">Meeting Intelligence</h3>
-                <p className="text-xs text-muted-foreground mt-0.5">Talk time, sentiment & engagement analytics</p>
-              </div>
-              {!isReadOnly && (
-                <button
-                  onClick={handleAnalyzeSentiment}
-                  disabled={isSentimentLoading}
-                  className={`relative flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-bold border transition-all cursor-pointer overflow-hidden ${
-                    sentimentDone
-                      ? "bg-emerald-500/10 border-emerald-500/30 text-emerald-700 dark:text-emerald-400"
-                      : "bg-primary/10 border-primary/30 text-primary hover:bg-primary/20"
-                  } disabled:opacity-70 disabled:cursor-not-allowed`}
-                >
-                  {isSentimentLoading && (
-                    <span className="absolute inset-0 bg-gradient-to-r from-transparent via-white/20 to-transparent animate-[shimmer_1.5s_infinite]" />
-                  )}
-                  {isSentimentLoading ? (
-                    <><Loader2 className="size-3 animate-spin" /> Analyzing...</>
-                  ) : sentimentDone ? (
-                    <><Check className="size-3" /> Re-analyze</>
-                  ) : (
-                    <><PieChart className="size-3" /> Analyze Sentiment</>
-                  )}
-                </button>
-              )}
-            </div>
-
-            {}
-            {meetingPulse && (
-              <div className={`rounded-xl border p-4 flex items-center gap-3 ${
-                meetingPulse.color === "emerald"
-                  ? "bg-emerald-500/5 border-emerald-500/20"
-                  : meetingPulse.color === "sky"
-                  ? "bg-sky-500/5 border-sky-500/20"
-                  : "bg-rose-500/5 border-rose-500/20"
-              }`}>
-                <span className="text-2xl">{meetingPulse.icon}</span>
-                <div>
-                  <p className="text-[11px] uppercase tracking-wider font-bold text-muted-foreground">Meeting Pulse</p>
-                  <p className={`text-base font-bold ${
-                    meetingPulse.color === "emerald" ? "text-emerald-700 dark:text-emerald-400"
-                    : meetingPulse.color === "sky" ? "text-sky-700 dark:text-sky-400"
-                    : "text-rose-700 dark:text-rose-400"
-                  }`}>{meetingPulse.label}</p>
-                </div>
-              </div>
-            )}
-
-            {}
-            <div className="space-y-3">
-              <p className="text-[11px] uppercase tracking-wider font-bold text-muted-foreground border-b border-border pb-1.5">Talk Time Distribution</p>
-
-              {speakerAnalytics.map((item, idx) => (
-                <div key={item.speakerId} className="space-y-2">
-                  {}
-                  <div className="flex items-center justify-between gap-2">
-                    <div className="flex items-center gap-2 min-w-0">
-                      <div
-                        className="size-6 rounded-md flex items-center justify-center text-[10px] font-bold shrink-0"
-                        style={{ backgroundColor: item.colors.bg, color: item.colors.text }}
-                      >
-                        {getInitials(item.name)}
-                      </div>
-                      <span className="text-sm font-semibold truncate text-foreground">{item.name}</span>
-                    </div>
-                    <div className="flex items-center gap-2 shrink-0 text-xs text-muted-foreground font-mono">
-                      <span className="font-bold text-foreground">{item.percentage}%</span>
-                      <span>{formatTime(item.duration)}</span>
-                    </div>
-                  </div>
-
-                  {}
-                  <div className="w-full bg-border/50 rounded-full h-2.5 overflow-hidden">
-                    <div
-                      className="h-full rounded-full transition-all duration-700 ease-out"
-                      style={{
-                        width: `${item.percentage}%`,
-                        backgroundColor: item.colors.text,
-                        animationDelay: `${idx * 100}ms`,
-                      }}
-                    />
-                  </div>
-
-                  {}
-                  <div className="flex items-center gap-3 text-xs text-muted-foreground">
-                    <span>{item.wordCount.toLocaleString()} words</span>
-                    <span>·</span>
-                    <span>{item.segCount} segments</span>
-                    {item.sentiment.raw.positive + item.sentiment.raw.negative + item.sentiment.raw.neutral > 0 && (
-                      <>
-                        <span>·</span>
-                        {}
-                        <div className="flex-1 flex h-1.5 rounded-full overflow-hidden gap-px">
-                          <div
-                            className="bg-emerald-500 transition-all duration-700 rounded-l-full"
-                            style={{ width: `${item.sentiment.positive}%` }}
-                            title={`Positive: ${item.sentiment.positive}%`}
-                          />
-                          <div
-                            className="bg-muted-foreground/40 transition-all duration-700"
-                            style={{ width: `${item.sentiment.neutral}%` }}
-                            title={`Neutral: ${item.sentiment.neutral}%`}
-                          />
-                          <div
-                            className="bg-rose-500 transition-all duration-700 rounded-r-full"
-                            style={{ width: `${item.sentiment.negative}%` }}
-                            title={`Negative: ${item.sentiment.negative}%`}
-                          />
-                        </div>
-                      </>
-                    )}
-                  </div>
-                </div>
-              ))}
-            </div>
-
-            {}
-            {speakerAnalytics.some(s => s.sentiment.raw.positive + s.sentiment.raw.negative > 0) && (
-              <div className="space-y-3">
-                <p className="text-[11px] uppercase tracking-wider font-bold text-muted-foreground border-b border-border pb-1.5">Sentiment Breakdown</p>
-                <div className="flex items-center gap-4 text-xs text-muted-foreground">
-                  <div className="flex items-center gap-1.5"><span className="size-2.5 rounded-full bg-emerald-500 shrink-0" />Positive</div>
-                  <div className="flex items-center gap-1.5"><span className="size-2.5 rounded-full bg-muted-foreground/40 shrink-0" />Neutral</div>
-                  <div className="flex items-center gap-1.5"><span className="size-2.5 rounded-full bg-rose-500 shrink-0" />Negative</div>
-                </div>
-              </div>
-            )}
-
-            {}
-            {!sentimentDone && !isReadOnly && (
-              <div className="rounded-xl border border-dashed border-border p-6 flex flex-col items-center justify-center gap-3 text-center">
-                <div className="size-10 rounded-full bg-primary/10 flex items-center justify-center">
-                  <PieChart className="size-5 text-primary" />
-                </div>
-                <div>
-                  <p className="text-sm font-semibold text-foreground">No Sentiment Data Yet</p>
-                  <p className="text-xs text-muted-foreground mt-1">Click "Analyze Sentiment" above to classify each speaker's tone using AI.</p>
-                </div>
-              </div>
-            )}
-
-          </div>
-        </TabsContent>
-
-        {}
-        <TabsContent value="export" className="flex-1 overflow-y-auto focus-visible:ring-0 m-0">
-          <div className="p-5 space-y-5">
-            <div>
-              <h3 className="text-base font-bold text-foreground">Project Management Exports</h3>
-              <p className="text-xs text-muted-foreground mt-0.5">Export summary and action items to your favorite PM tools</p>
-            </div>
-
-            {exportToast && (
-              <div className={`flex items-start gap-2.5 p-3 rounded-lg border text-xs font-semibold animate-in fade-in duration-200 ${
-                exportToast.type === "success"
-                  ? "bg-emerald-500/10 border-emerald-500/30 text-emerald-700 dark:text-emerald-400"
-                  : "bg-rose-500/10 border-rose-500/30 text-rose-700 dark:text-rose-400"
-              }`}>
-                {exportToast.type === "success" ? "✅" : "⚠️"}
-                <div className="flex-1 leading-normal">{exportToast.message}</div>
-              </div>
-            )}
-
-            <div className="space-y-3">
-              {}
-              <div className="rounded-xl border border-primary/30 bg-primary/5 p-4 space-y-3 shadow-2xs">
-                <div className="flex items-center gap-3">
-                  <div className="size-10 rounded-lg bg-primary/10 text-primary flex items-center justify-center shrink-0">
-                    <Download className="size-5" />
-                  </div>
-                  <div className="flex-1 min-w-0">
-                    <h4 className="text-sm font-extrabold text-foreground flex items-center gap-2">
-                      <span>Multi-Format Export Engine</span>
-                      <span className="text-[10px] font-bold text-primary bg-primary/10 px-2 py-0.5 rounded-full uppercase tracking-wider">
-                        PDF · SRT · Notion
-                      </span>
-                    </h4>
-                    <p className="text-xs text-muted-foreground mt-0.5">Export printable PDF reports, .srt/.vtt subtitles, or Notion markdown</p>
-                  </div>
-                </div>
-                <Button
-                  onClick={() => setIsExportModalOpen(true)}
-                  className="w-full h-9 text-xs font-extrabold gap-2 cursor-pointer bg-primary hover:bg-primary/90 text-primary-foreground rounded-xl"
-                >
-                  <Download className="size-3.5" />
-                  <span>Open Export Hub</span>
-                </Button>
-              </div>
-
-              {}
-              <div className="rounded-xl border border-border bg-card p-4 space-y-3 shadow-2xs hover:border-primary/20 transition-all duration-200">
-                <div className="flex items-center gap-3">
-                  <div className="size-10 rounded-lg bg-emerald-500/10 flex items-center justify-center text-xl shrink-0">
-                    💬
-                  </div>
-                  <div className="flex-1 min-w-0">
-                    <h4 className="text-sm font-bold text-foreground">Slack Integration</h4>
-                    <p className="text-xs text-muted-foreground mt-0.5">Post summary and actions to a Slack channel webhook</p>
-                  </div>
-                </div>
-                <Button
-                  onClick={handleSlackExport}
-                  disabled={isSlackExporting || isReadOnly}
-                  className="w-full h-8 text-xs font-semibold gap-1.5"
-                >
-                  {isSlackExporting ? <Loader2 className="size-3.5 animate-spin" /> : <Send className="size-3.5" />}
-                  {isSlackExporting ? "Exporting to Slack..." : "Export to Slack"}
-                </Button>
-              </div>
-
-              {}
-              <div className="rounded-xl border border-border bg-card p-4 space-y-3 shadow-2xs hover:border-primary/20 transition-all duration-200">
-                <div className="flex items-center gap-3">
-                  <div className="size-10 rounded-lg bg-blue-500/10 flex items-center justify-center text-xl shrink-0">
-                    🔵
-                  </div>
-                  <div className="flex-1 min-w-0">
-                    <h4 className="text-sm font-bold text-foreground">Jira Integration</h4>
-                    <p className="text-xs text-muted-foreground mt-0.5">Convert pending actions into issues in Jira Project</p>
-                  </div>
-                </div>
-                <Button
-                  onClick={handleJiraExport}
-                  disabled={isJiraExporting || isReadOnly}
-                  className="w-full h-8 text-xs font-semibold gap-1.5"
-                >
-                  {isJiraExporting ? <Loader2 className="size-3.5 animate-spin" /> : <Send className="size-3.5" />}
-                  {isJiraExporting ? "Creating Issues..." : "Export Action Items"}
-                </Button>
-              </div>
-
-              {}
-              <div className="rounded-xl border border-border bg-card p-4 space-y-3 shadow-2xs hover:border-primary/20 transition-all duration-200">
-                <div className="flex items-center gap-3">
-                  <div className="size-10 rounded-lg bg-purple-500/10 flex items-center justify-center text-xl shrink-0">
-                    🟣
-                  </div>
-                  <div className="flex-1 min-w-0">
-                    <h4 className="text-sm font-bold text-foreground">Linear Integration</h4>
-                    <p className="text-xs text-muted-foreground mt-0.5">Convert pending actions into issues in your Linear Team</p>
-                  </div>
-                </div>
-                <Button
-                  onClick={handleLinearExport}
-                  disabled={isLinearExporting || isReadOnly}
-                  className="w-full h-8 text-xs font-semibold gap-1.5"
-                >
-                  {isLinearExporting ? <Loader2 className="size-3.5 animate-spin" /> : <Send className="size-3.5" />}
-                  {isLinearExporting ? "Creating Issues..." : "Export Action Items"}
-                </Button>
-              </div>
-            </div>
-
-            <div className="text-xs text-muted-foreground leading-relaxed bg-muted/40 p-3 rounded-lg border border-border/50">
-              💡 <strong>Tip:</strong> You can configure webhooks and API tokens in the <Link href={`/workspace/${workspaceSlug}/settings/integrations`} className="text-primary hover:underline font-semibold">Integrations settings page</Link>.
-            </div>
-          </div>
-        </TabsContent>
       </Tabs>
     );
   };
@@ -1775,18 +1384,19 @@ export function MeetingViewerClient({
         <div className="flex-1 flex flex-col border-r border-border overflow-hidden">
           
           {}
+          {/* Header Topbar */}
           <div className="flex items-center justify-between border-b border-border px-6 py-3 shrink-0 bg-muted/20 gap-4">
-            <div className="flex items-center gap-2">
-              <Button variant="ghost" size="icon" asChild className="size-8">
+            <div className="flex items-center gap-2 min-w-0 shrink-0">
+              <Button variant="ghost" size="icon" asChild className="size-8 shrink-0">
                 <Link href={`/workspace/${workspaceSlug}`}>
                   <ChevronLeft className="size-4" />
                 </Link>
               </Button>
-              <h2 className="text-sm font-semibold text-foreground truncate max-w-[200px] sm:max-w-xs">{meeting.title}</h2>
+              <h2 className="text-sm font-semibold text-foreground truncate max-w-[160px] sm:max-w-[220px] lg:max-w-xs">{meeting.title}</h2>
             </div>
             
-            <div className="flex items-center gap-2 max-w-md w-full justify-end">
-              {}
+            <div className="flex items-center gap-2 justify-end min-w-0 flex-1">
+              {/* Auto Scroll Toggle */}
               <Button
                 onClick={() => setAutoScroll(!autoScroll)}
                 variant="ghost"
@@ -1802,7 +1412,7 @@ export function MeetingViewerClient({
                   {autoScroll && <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-primary opacity-75"></span>}
                   <span className={`relative inline-flex rounded-full h-2 w-2 ${autoScroll ? "bg-primary" : "bg-muted-foreground/60"}`}></span>
                 </span>
-                <span className="text-[11px] font-semibold">Follow Text</span>
+                <span className="text-[11px] font-semibold hidden md:inline">Follow Text</span>
               </Button>
 
               {/* Toggle Video Player if Video Recording */}
@@ -1819,12 +1429,13 @@ export function MeetingViewerClient({
                   title="Toggle Video Screen"
                 >
                   <Video className="size-3.5 text-purple-500" />
-                  <span className="text-[11px] font-semibold">{showVideo ? "Hide Video" : "Show Video"}</span>
+                  <span className="text-[11px] font-semibold hidden sm:inline">{showVideo ? "Hide Video" : "Show Video"}</span>
                 </Button>
               )}
 
-              <div className="relative flex-1">
-                <Search className="absolute left-2.5 top-2.5 size-3.5 text-muted-foreground" />
+              {/* Search Bar with dedicated responsive width and focus expansion */}
+              <div className="relative w-40 sm:w-52 md:w-64 transition-all focus-within:w-52 sm:focus-within:w-72 shrink-0">
+                <Search className="absolute left-2.5 top-2.5 size-3.5 text-muted-foreground pointer-events-none" />
                 <Input
                   placeholder="Search transcript..."
                   className="pl-8 pr-7 h-8 text-xs bg-card w-full"
@@ -1907,7 +1518,7 @@ export function MeetingViewerClient({
                           <span className="text-xs font-bold text-foreground">Share this meeting</span>
                           <button
                             onClick={() => setShowShareMenu(false)}
-                            className="text-2xs text-muted-foreground hover:text-foreground cursor-pointer px-1.5 py-0.5 rounded hover:bg-muted font-semibold"
+                            className="text-[11px] text-muted-foreground hover:text-foreground cursor-pointer px-1.5 py-0.5 rounded hover:bg-muted font-semibold"
                           >
                             Done
                           </button>
@@ -1922,7 +1533,7 @@ export function MeetingViewerClient({
                               <Lock className="size-4 text-muted-foreground" />
                             )}
                             <div className="flex flex-col">
-                              <span className="text-2xs font-semibold text-foreground">Public Access</span>
+                              <span className="text-xs font-semibold text-foreground">Public Access</span>
                               <span className="text-[10px] text-muted-foreground">Anyone with the link can view</span>
                             </div>
                           </div>
@@ -1959,6 +1570,20 @@ export function MeetingViewerClient({
                   )}
                 </div>
               )}
+
+              {/* Export Feature (Temporarily commented out for future use) */}
+              {/* {!isReadOnly && (
+                <Button
+                  onClick={() => setIsExportModalOpen(true)}
+                  variant="outline"
+                  size="sm"
+                  className="h-8 text-xs flex items-center gap-1.5 cursor-pointer bg-card px-2.5 border-border hover:border-primary/50 hover:bg-primary/5 transition-all text-foreground"
+                  title="Export Meeting (PDF, Notion, Subtitles, Markdown)"
+                >
+                  <Download className="size-3.5 text-muted-foreground" />
+                  <span className="hidden sm:inline">Export</span>
+                </Button>
+              )} */}
             </div>
           </div>
 
@@ -2715,8 +2340,8 @@ export function MeetingViewerClient({
         speakerName={clipperState.speakerName}
       />
 
-      {}
-      <MeetingExportModal
+      {/* Export Modal (Temporarily commented out for future use) */}
+      {/* <MeetingExportModal
         isOpen={isExportModalOpen}
         onClose={() => setIsExportModalOpen(false)}
         meeting={meeting}
@@ -2724,7 +2349,7 @@ export function MeetingViewerClient({
         actionItems={actionItems}
         speakerMap={speakerMap}
         workspaceName="Workspace"
-      />
+      /> */}
 
     </div>
   );

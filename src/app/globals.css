@@ -186,6 +186,32 @@
     @apply bg-background text-foreground;
     letter-spacing: var(--tracking-normal);
   }
+  button:not(:disabled),
+  [role="button"]:not([aria-disabled="true"]),
+  [type="button"]:not(:disabled),
+  [type="reset"]:not(:disabled),
+  [type="submit"]:not(:disabled),
+  summary,
+  [data-slot="button"],
+  [data-slot="tabs-trigger"],
+  [data-slot="dropdown-menu-item"]:not([data-disabled]),
+  [data-slot="dropdown-menu-checkbox-item"]:not([data-disabled]),
+  [data-slot="dropdown-menu-radio-item"]:not([data-disabled]),
+  [data-slot="select-trigger"],
+  [data-slot="select-item"]:not([data-disabled]),
+  [data-slot="checkbox"]:not([data-disabled]),
+  [data-slot="switch"]:not([data-disabled]) {
+    cursor: pointer;
+  }
+  button:disabled,
+  [role="button"][aria-disabled="true"],
+  [type="button"]:disabled,
+  [type="reset"]:disabled,
+  [type="submit"]:disabled,
+  [data-disabled="true"],
+  [data-disabled] {
+    cursor: not-allowed;
+  }
 }
 .audio-slider {
   -webkit-appearance: none;
@@ -222,4 +248,14 @@
 .audio-slider::-moz-range-thumb:hover {
   transform: scale(1.2);
   background-color: var(--secondary);
+}
+
+@utility text-2xs {
+  font-size: 0.6875rem; /* 11px */
+  line-height: 0.875rem;
+}
+
+@utility text-3xs {
+  font-size: 0.625rem; /* 10px */
+  line-height: 0.75rem;
 }

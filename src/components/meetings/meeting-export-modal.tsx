@@ -65,6 +65,23 @@ function formatVTTTime(seconds: number): string {
   return `${hrs.toString().padStart(2, "0")}:${mins.toString().padStart(2, "0")}:${secs.toString().padStart(2, "0")}.${ms.toString().padStart(3, "0")}`;
 }
 
+function escapeHtml(str: string): string {
+  if (!str) return "";
+  return str
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;")
+    .replace(/'/g, "&#039;");
+}
+
+function formatInline(text: string): string {
+  return text
+    .replace(/\*\*(.*?)\*\*/g, '<strong>$1</strong>')
+    .replace(/\*(.*?)\*/g, '<em>$1</em>')
+    .replace(/`([^`]+)`/g, '<code style="background:#f1f5f9; border:1px solid #e2e8f0; padding:1px 5px; border-radius:3px; font-size:11px; font-family:monospace;">$1</code>');
+}
+
 function renderCleanExecutiveSummaryHtml(rawSummary: string | null, title: string, segmentCount: number): string {
   if (
     !rawSummary ||
@@ -73,30 +90,127 @@ function renderCleanExecutiveSummaryHtml(rawSummary: string | null, title: strin
     rawSummary.trim().length === 0
   ) {
     return `
-      <div style="background:#f8fafc; border:1px solid #e2e8f0; border-radius:12px; padding:18px; margin-bottom:20px;">
-        <h3 style="margin:0 0 8px 0; font-size:14px; font-weight:700; color:#0f172a; text-transform:uppercase; letter-spacing:0.5px;">Executive Summary</h3>
-        <p style="margin:0; font-size:13px; color:#334155; line-height:1.6;">
-          Executive overview for <strong>${title}</strong>. Discussions comprised ${segmentCount} key transcript segments detailing team deliverables, operational alignment, and action items.
+      <div class="report-section">
+        <div class="section-header">
+          <h2 class="section-title">Executive Summary</h2>
+        </div>
+        <p class="section-desc">
+          Executive briefing for <strong>${escapeHtml(title)}</strong>. Discussions comprised ${segmentCount} transcript segments detailing operational alignment, key deliverables, and team decisions.
         </p>
       </div>
     `;
   }
 
-  let html = rawSummary
-    .replace(/^### (.*$)/gim, '<h4 style="margin:14px 0 6px 0; font-size:14px; font-weight:700; color:#1e293b;">$1</h4>')
-    .replace(/^## (.*$)/gim, '<h3 style="margin:16px 0 8px 0; font-size:15px; font-weight:700; color:#0f172a;">$1</h3>')
-    .replace(/^# (.*$)/gim, '<h2 style="margin:18px 0 10px 0; font-size:16px; font-weight:800; color:#0f172a;">$1</h2>')
-    .replace(/\*\*(.*?)\*\*/gim, '<strong>$1</strong>')
-    .replace(/\*(.*?)\*/gim, '<em>$1</em>')
-    .replace(/\n\n/g, '</p><p style="margin:8px 0; font-size:13px; color:#334155; line-height:1.6;">')
-    .replace(/\n/g, '<br/>');
+  const lines = rawSummary.split("\n");
+  let html = "";
+  let inKeyPoints = false;
+  let inDecisions = false;
+  let currentParagraph = "";
 
-  return `
-    <div style="background:#f8fafc; border:1px solid #e2e8f0; border-radius:12px; padding:18px; margin-bottom:20px;">
-      <h3 style="margin:0 0 10px 0; font-size:14px; font-weight:700; color:#0f172a; border-bottom:1px solid #cbd5e1; padding-bottom:6px;">Executive Summary</h3>
-      <div style="font-size:13px; color:#334155; line-height:1.6;">${html}</div>
-    </div>
-  `;
+  const flushParagraph = () => {
+    if (currentParagraph.trim()) {
+      html += `<p class="section-desc">${formatInline(currentParagraph.trim())}</p>`;
+      currentParagraph = "";
+    }
+  };
+
+  const closeOpenBlocks = () => {
+    flushParagraph();
+    if (inKeyPoints) {
+      html += `</div></div>`;
+      inKeyPoints = false;
+    }
+    if (inDecisions) {
+      html += `</div></div>`;
+      inDecisions = false;
+    }
+  };
+
+  for (let i = 0; i < lines.length; i++) {
+    const rawLine = lines[i];
+    const line = rawLine.trim();
+
+    if (!line) {
+      flushParagraph();
+      continue;
+    }
+
+    // Heading match (# Heading, ## Heading, ### Heading)
+    const headingMatch = line.match(/^#{1,4}\s+(.*)$/);
+    if (headingMatch) {
+      closeOpenBlocks();
+      const headingText = headingMatch[1].trim();
+      const lower = headingText.toLowerCase();
+
+      if (lower.includes("decision")) {
+        html += `
+          <div class="decisions-card">
+            <div class="decisions-card-title">
+              <span class="decision-icon">✓</span> Decisions & Key Outcomes
+            </div>
+            <div class="decisions-list">
+        `;
+        inDecisions = true;
+      } else if (lower.includes("key point") || lower.includes("discussion") || lower.includes("topics") || lower.includes("takeaway")) {
+        html += `
+          <div class="report-section">
+            <div class="section-header">
+              <h2 class="section-title">${escapeHtml(headingText)}</h2>
+            </div>
+            <div class="key-point-list">
+        `;
+        inKeyPoints = true;
+      } else {
+        html += `
+          <div class="report-section">
+            <div class="section-header">
+              <h2 class="section-title">${escapeHtml(headingText)}</h2>
+            </div>
+        `;
+      }
+      continue;
+    }
+
+    // Bullet items: "- **Title:** Description" or "- Item"
+    if (line.startsWith("- ") || line.startsWith("* ")) {
+      flushParagraph();
+      const content = line.substring(2).trim();
+
+      if (inDecisions) {
+        html += `
+          <div class="decision-item">
+            <span class="decision-check">✓</span>
+            <div class="decision-text">${formatInline(content)}</div>
+          </div>
+        `;
+      } else if (inKeyPoints) {
+        html += `
+          <div class="key-point-item">
+            <span class="point-bullet"></span>
+            <div class="point-body">${formatInline(content)}</div>
+          </div>
+        `;
+      } else {
+        html += `
+          <div class="key-point-item">
+            <span class="point-bullet"></span>
+            <div class="point-body">${formatInline(content)}</div>
+          </div>
+        `;
+      }
+      continue;
+    }
+
+    // Regular paragraph line
+    if (currentParagraph) {
+      currentParagraph += " " + line;
+    } else {
+      currentParagraph = line;
+    }
+  }
+
+  closeOpenBlocks();
+  return html;
 }
 
 export function MeetingExportModal({
@@ -197,67 +311,511 @@ export function MeetingExportModal({
     let actionsHtml = "";
     if (actionItems.length > 0) {
       actionsHtml = `
-        <div style="margin-top:24px;">
-          <h2 style="font-size:15px; font-weight:700; border-bottom:1px solid #e2e8f0; padding-bottom:6px; color:#0f172a; margin-bottom:12px;">Action Items Checklist</h2>
-          <ul style="list-style:none; padding:0; margin:0;">
+        <div class="report-section">
+          <div class="section-header">
+            <h2 class="section-title">Action Items & Deliverables</h2>
+            <span class="section-counter">${actionItems.filter(a => a.status === "COMPLETED").length}/${actionItems.length} Completed</span>
+          </div>
+          <div class="action-items-list">
             ${actionItems
-              .map(
-                (a) => `
-              <li style="margin-bottom:8px; font-size:13px; color:#334155; display:flex; items-center; gap:8px;">
-                <span style="color:${a.status === "COMPLETED" ? "#10b981" : "#3b82f6"}; font-weight:bold;">${a.status === "COMPLETED" ? "☑" : "☐"}</span>
-                <strong style="color:#0f172a;">${a.taskDescription}</strong>
-                ${a.assigneeName ? `<span style="color:#64748b; font-size:11px;">(Assignee: ${a.assigneeName})</span>` : ""}
-              </li>`
-              )
+              .map((a) => {
+                const isDone = a.status === "COMPLETED";
+                return `
+                  <div class="action-card ${isDone ? "completed" : ""}">
+                    <div class="action-main">
+                      <div class="action-box ${isDone ? "completed" : ""}">
+                        ${isDone ? `<svg width="10" height="8" viewBox="0 0 10 8" fill="none"><path d="M1 4L3.5 6.5L9 1" stroke="#ffffff" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg>` : ""}
+                      </div>
+                      <span class="action-desc ${isDone ? "completed" : ""}">${escapeHtml(a.taskDescription)}</span>
+                    </div>
+                    <div class="action-badges">
+                      ${a.assigneeName ? `<span class="assignee-badge">👤 ${escapeHtml(a.assigneeName)}</span>` : ""}
+                      <span class="status-badge ${isDone ? "status-completed" : "status-pending"}">${isDone ? "Completed" : "Pending"}</span>
+                    </div>
+                  </div>
+                `;
+              })
               .join("")}
-          </ul>
+          </div>
         </div>
       `;
     }
 
-    let transcriptHtml = `
-      <div style="margin-top:24px;">
-        <h2 style="font-size:15px; font-weight:700; border-bottom:1px solid #e2e8f0; padding-bottom:6px; color:#0f172a; margin-bottom:12px;">Transcript Summary</h2>
-        <div>
-          ${segments
-            .slice(0, 40)
-            .map((seg) => {
-              const speaker = speakerMap[seg.speakerId] || seg.speakerId;
-              const timeStr = formatSecondsToTime(seg.startTime);
-              return `<p style="font-size:12px; margin-bottom:6px; line-height:1.5; color:#334155;"><strong style="color:#2563eb;">[${timeStr}] ${speaker}:</strong> ${seg.text}</p>`;
-            })
-            .join("")}
+    let transcriptHtml = "";
+    if (segments.length > 0) {
+      transcriptHtml = `
+        <div class="report-section">
+          <div class="section-header">
+            <h2 class="section-title">Transcript Key Excerpts</h2>
+            <span class="section-counter">${Math.min(segments.length, 35)} of ${segments.length} segments</span>
+          </div>
+          <div class="transcript-list">
+            ${segments
+              .slice(0, 35)
+              .map((seg) => {
+                const speaker = speakerMap[seg.speakerId] || seg.speakerId;
+                const timeStr = formatSecondsToTime(seg.startTime);
+                return `
+                  <div class="transcript-row">
+                    <div class="transcript-meta">
+                      <span class="timestamp-tag">${timeStr}</span>
+                      <span class="speaker-label">${escapeHtml(speaker)}</span>
+                    </div>
+                    <div class="transcript-text">${escapeHtml(seg.text)}</div>
+                  </div>
+                `;
+              })
+              .join("")}
+          </div>
         </div>
-      </div>
-    `;
+      `;
+    }
 
     const summaryHtml = renderCleanExecutiveSummaryHtml(meeting.summaryMarkdown, meeting.title, segments.length);
 
     printWin.document.write(`
       <!DOCTYPE html>
-      <html>
+      <html lang="en">
         <head>
-          <title>${meeting.title} - Executive Report</title>
+          <meta charset="UTF-8">
+          <title> </title>
           <style>
             @page {
-              size: auto;
-              margin: 15mm;
+              size: A4 portrait;
+              margin-top: 0mm;
+              margin-bottom: 14mm;
+              margin-left: 16mm;
+              margin-right: 16mm;
+              @top-left { content: none !important; }
+              @top-center { content: none !important; }
+              @top-right { content: none !important; }
+              @bottom-left { content: none !important; }
+              @bottom-right { content: none !important; }
+              @bottom-center {
+                content: "Page " counter(page) " of " counter(pages);
+                font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+                font-size: 8.5pt;
+                color: #94a3b8;
+              }
             }
-            body { font-family: system-ui, -apple-system, sans-serif; color: #0f172a; max-width: 800px; margin: 0 auto; padding: 20px; }
-            .header { border-bottom: 2px solid #3b82f6; padding-bottom: 16px; margin-bottom: 24px; display: flex; justify-content: space-between; align-items: flex-end; }
-            .title { font-size: 22px; font-weight: 800; margin: 0; color: #0f172a; text-align: right; line-height: 1.25; }
-            .meta { font-size: 12px; color: #64748b; margin-top: 6px; }
-            .brand { font-size: 14px; font-weight: 800; color: #2563eb; letter-spacing: 0.5px; }
+
+            * {
+              box-sizing: border-box;
+              -webkit-print-color-adjust: exact !important;
+              print-color-adjust: exact !important;
+            }
+
+            body {
+              font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+              color: #0f172a;
+              background: #ffffff;
+              margin: 0;
+              padding: 14mm 0 10mm 0;
+              line-height: 1.6;
+              font-size: 13px;
+              -webkit-font-smoothing: antialiased;
+            }
+
+            /* Branding Bar */
+            .report-brand-bar {
+              display: flex;
+              align-items: center;
+              justify-content: space-between;
+              border-bottom: 1px solid #e2e8f0;
+              padding-bottom: 12px;
+              margin-bottom: 16px;
+            }
+
+            .brand-group {
+              display: flex;
+              align-items: center;
+              gap: 8px;
+            }
+
+            .brand-logo-icon {
+              width: 22px;
+              height: 22px;
+              border-radius: 6px;
+              background: linear-gradient(135deg, #2563eb, #4f46e5);
+              color: #ffffff;
+              display: flex;
+              align-items: center;
+              justify-content: center;
+              font-size: 11px;
+              font-weight: 800;
+              letter-spacing: -0.5px;
+            }
+
+            .brand-name {
+              font-size: 13px;
+              font-weight: 800;
+              letter-spacing: -0.2px;
+              color: #0f172a;
+            }
+
+            .brand-divider {
+              color: #cbd5e1;
+              font-weight: 300;
+            }
+
+            .brand-tag {
+              font-size: 10.5px;
+              font-weight: 600;
+              color: #64748b;
+              letter-spacing: 0.3px;
+              text-transform: uppercase;
+            }
+
+            .confidential-pill {
+              font-size: 9.5px;
+              font-weight: 700;
+              letter-spacing: 0.5px;
+              text-transform: uppercase;
+              color: #475569;
+              background: #f1f5f9;
+              border: 1px solid #e2e8f0;
+              padding: 3px 8px;
+              border-radius: 9999px;
+            }
+
+            /* Title & Context Grid */
+            .report-title-block {
+              margin-bottom: 22px;
+            }
+
+            .report-title {
+              font-size: 24px;
+              font-weight: 800;
+              color: #0f172a;
+              letter-spacing: -0.5px;
+              line-height: 1.25;
+              margin: 0 0 12px 0;
+            }
+
+            .report-meta-grid {
+              display: flex;
+              flex-wrap: wrap;
+              gap: 8px 16px;
+              font-size: 11.5px;
+              color: #64748b;
+              background: #f8fafc;
+              border: 1px solid #f1f5f9;
+              border-radius: 8px;
+              padding: 8px 12px;
+            }
+
+            .meta-item {
+              display: flex;
+              align-items: center;
+              gap: 5px;
+            }
+
+            .meta-item strong {
+              color: #334155;
+              font-weight: 600;
+            }
+
+            /* Section Styling */
+            .report-section {
+              margin-bottom: 22px;
+              page-break-inside: avoid;
+              break-inside: avoid;
+            }
+
+            .section-header {
+              display: flex;
+              align-items: center;
+              justify-content: space-between;
+              border-bottom: 1.5px solid #0f172a;
+              padding-bottom: 6px;
+              margin-bottom: 12px;
+            }
+
+            .section-title {
+              font-size: 13.5px;
+              font-weight: 800;
+              letter-spacing: 0.4px;
+              text-transform: uppercase;
+              color: #0f172a;
+              margin: 0;
+            }
+
+            .section-counter {
+              font-size: 11px;
+              font-weight: 600;
+              color: #64748b;
+            }
+
+            .section-desc {
+              font-size: 13px;
+              color: #334155;
+              line-height: 1.65;
+              margin: 0 0 10px 0;
+            }
+
+            /* Key Points */
+            .key-point-list {
+              display: flex;
+              flex-direction: column;
+              gap: 8px;
+              margin: 10px 0;
+            }
+
+            .key-point-item {
+              display: flex;
+              align-items: flex-start;
+              gap: 10px;
+              font-size: 12.5px;
+              line-height: 1.55;
+              color: #334155;
+              background: #ffffff;
+              border: 1px solid #f1f5f9;
+              border-left: 3px solid #3b82f6;
+              border-radius: 0 6px 6px 0;
+              padding: 8px 12px;
+              page-break-inside: avoid;
+              break-inside: avoid;
+            }
+
+            .point-bullet {
+              width: 5px;
+              height: 5px;
+              border-radius: 50%;
+              background: #3b82f6;
+              margin-top: 7px;
+              shrink: 0;
+            }
+
+            .point-body strong {
+              color: #0f172a;
+              font-weight: 700;
+            }
+
+            /* Decisions Block */
+            .decisions-card {
+              background: #f0fdf4;
+              border: 1px solid #bbf7d0;
+              border-left: 4px solid #10b981;
+              border-radius: 8px;
+              padding: 12px 14px;
+              margin: 14px 0;
+              page-break-inside: avoid;
+              break-inside: avoid;
+            }
+
+            .decisions-card-title {
+              font-size: 12px;
+              font-weight: 800;
+              text-transform: uppercase;
+              letter-spacing: 0.5px;
+              color: #15803d;
+              margin: 0 0 8px 0;
+              display: flex;
+              align-items: center;
+              gap: 6px;
+            }
+
+            .decision-icon {
+              font-weight: bold;
+              font-size: 14px;
+            }
+
+            .decisions-list {
+              display: flex;
+              flex-direction: column;
+              gap: 6px;
+            }
+
+            .decision-item {
+              display: flex;
+              align-items: flex-start;
+              gap: 8px;
+              font-size: 12.5px;
+              color: #166534;
+              line-height: 1.5;
+            }
+
+            .decision-check {
+              color: #16a34a;
+              font-weight: bold;
+              font-size: 13px;
+              line-height: 1;
+              margin-top: 1px;
+            }
+
+            .decision-text strong {
+              color: #14532d;
+              font-weight: 700;
+            }
+
+            /* Action Items */
+            .action-items-list {
+              display: flex;
+              flex-direction: column;
+              gap: 8px;
+            }
+
+            .action-card {
+              display: flex;
+              align-items: center;
+              justify-content: space-between;
+              gap: 12px;
+              border: 1px solid #e2e8f0;
+              border-radius: 8px;
+              padding: 9px 12px;
+              background: #ffffff;
+              page-break-inside: avoid;
+              break-inside: avoid;
+            }
+
+            .action-card.completed {
+              background: #f8fafc;
+              border-color: #e2e8f0;
+            }
+
+            .action-main {
+              display: flex;
+              align-items: center;
+              gap: 10px;
+              min-width: 0;
+              flex: 1;
+            }
+
+            .action-box {
+              width: 16px;
+              height: 16px;
+              border-radius: 4px;
+              border: 1.5px solid #cbd5e1;
+              display: flex;
+              align-items: center;
+              justify-content: center;
+              shrink: 0;
+              background: #ffffff;
+            }
+
+            .action-box.completed {
+              border-color: #10b981;
+              background: #10b981;
+            }
+
+            .action-desc {
+              font-size: 12.5px;
+              font-weight: 600;
+              color: #0f172a;
+              line-height: 1.4;
+            }
+
+            .action-desc.completed {
+              text-decoration: line-through;
+              color: #94a3b8;
+            }
+
+            .action-badges {
+              display: flex;
+              align-items: center;
+              gap: 6px;
+              shrink: 0;
+            }
+
+            .assignee-badge {
+              font-size: 10.5px;
+              font-weight: 600;
+              color: #475569;
+              background: #f1f5f9;
+              border: 1px solid #e2e8f0;
+              padding: 2px 8px;
+              border-radius: 9999px;
+              white-space: nowrap;
+            }
+
+            .status-badge {
+              font-size: 10px;
+              font-weight: 700;
+              text-transform: uppercase;
+              letter-spacing: 0.3px;
+              padding: 2px 7px;
+              border-radius: 9999px;
+            }
+
+            .status-completed {
+              background: #dcfce7;
+              color: #15803d;
+            }
+
+            .status-pending {
+              background: #f8fafc;
+              border: 1px solid #e2e8f0;
+              color: #64748b;
+            }
+
+            /* Transcript Table/List */
+            .transcript-list {
+              display: flex;
+              flex-direction: column;
+              gap: 6px;
+            }
+
+            .transcript-row {
+              display: flex;
+              align-items: baseline;
+              gap: 12px;
+              padding: 4px 0;
+              border-bottom: 1px solid #f8fafc;
+              font-size: 11.5px;
+              line-height: 1.5;
+              page-break-inside: avoid;
+              break-inside: avoid;
+            }
+
+            .transcript-meta {
+              display: flex;
+              align-items: center;
+              gap: 6px;
+              min-width: 140px;
+              shrink: 0;
+            }
+
+            .timestamp-tag {
+              font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+              font-size: 10px;
+              color: #64748b;
+              background: #f1f5f9;
+              padding: 1px 5px;
+              border-radius: 4px;
+            }
+
+            .speaker-label {
+              font-weight: 700;
+              color: #0f172a;
+              font-size: 11px;
+            }
+
+            .transcript-text {
+              color: #334155;
+              flex: 1;
+            }
           </style>
         </head>
         <body>
-          <div class="header">
-            <div style="text-align: left;">
-              <div class="brand">MeetLog Intelligence</div>
-              <div class="meta">${workspaceName} · Date: ${formattedDate} · Duration: ${formatDurationHuman(meeting.durationSeconds)}</div>
+          <!-- Brand & Classification Header -->
+          <div class="report-brand-bar">
+            <div class="brand-group">
+              <div class="brand-logo-icon">M</div>
+              <span class="brand-name">MeetLog</span>
+              <span class="brand-divider">/</span>
+              <span class="brand-tag">Executive Intelligence Brief</span>
             </div>
-            <div style="text-align: right; max-width: 60%;">
-              <h1 class="title">${meeting.title}</h1>
+            <div class="confidential-pill">Confidential · Team Internal</div>
+          </div>
+
+          <!-- Title & Context Grid -->
+          <div class="report-title-block">
+            <h1 class="report-title">${escapeHtml(meeting.title)}</h1>
+            <div class="report-meta-grid">
+              <div class="meta-item">📅 <strong>Date:</strong> <span>${formattedDate}</span></div>
+              <div class="meta-item">⏱️ <strong>Duration:</strong> <span>${formatDurationHuman(meeting.durationSeconds)}</span></div>
+              <div class="meta-item">🏢 <strong>Workspace:</strong> <span>${escapeHtml(workspaceName)}</span></div>
+              <div class="meta-item">👥 <strong>Action Items:</strong> <span>${actionItems.length} total</span></div>
             </div>
           </div>
 
@@ -266,8 +824,12 @@ export function MeetingExportModal({
           ${transcriptHtml}
 
           <script>
-            document.title = "${meeting.title.replace(/"/g, "")} - Executive Report";
-            window.onload = function() { window.print(); }
+            document.title = " ";
+            window.onload = function() {
+              setTimeout(() => {
+                window.print();
+              }, 120);
+            };
           </script>
         </body>
       </html>
