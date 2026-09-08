@@ -164,21 +164,24 @@ export async function ingestMediaLink(
         }
       }
 
-      const clientArgs = [
+      // Helper function to build yt-dlp arguments
+      const buildYtDlpArgs = (playerClient?: string, withCookies = true) => [
         "--no-playlist",
-        "--extractor-args",
-        "youtube:player_client=ios,mweb,web_creator,default",
+        ...(playerClient ? ["--extractor-args", `youtube:player_client=${playerClient}`] : []),
         ...(process.execPath ? ["--js-runtimes", `node:${process.execPath}`] : []),
-        ...(cookiePath ? ["--cookies", cookiePath] : []),
+        ...(withCookies && cookiePath ? ["--cookies", cookiePath] : []),
         ...(process.env.YOUTUBE_PROXY ? ["--proxy", process.env.YOUTUBE_PROXY] : []),
       ];
+
+      // Primary client: android,web (bypasses iOS SABR-only streaming and mweb GVS PO token blocks)
+      const primaryClientArgs = buildYtDlpArgs("android,web", true);
 
       // Query metadata if not detected yet
       if (!detectedTitle || durationSeconds === 0) {
         try {
           const { stdout: metaOut } = await execFileAsync(ytDlpPath, [
             "--dump-json",
-            ...clientArgs,
+            ...primaryClientArgs,
             url,
           ]);
           const parsed = JSON.parse(metaOut);
@@ -190,8 +193,9 @@ export async function ingestMediaLink(
       }
 
       log("extract", "Transcoding YouTube audio stream into 16kHz speech standard via FFmpeg...");
-      try {
-        await execFileAsync(ytDlpPath, [
+
+      const runExtraction = async (args: string[]) => {
+        return execFileAsync(ytDlpPath, [
           "-x",
           "--audio-format",
           "mp3",
@@ -201,23 +205,54 @@ export async function ingestMediaLink(
           "ExtractAudio:-b:a 128k -ar 16000 -ac 1",
           "--ffmpeg-location",
           ffmpegPath,
-          ...clientArgs,
+          ...args,
           "-o",
           outputTemplate,
           url,
         ]);
+      };
+
+      try {
+        await runExtraction(primaryClientArgs);
       } catch (ytErr: any) {
-        const fullErr = (ytErr.stderr || ytErr.message || "").toString();
-        if (
-          fullErr.includes("Sign in to confirm you're not a bot") ||
-          fullErr.includes("Sign in to confirm you’re not a bot")
-        ) {
-          throw new Error(
-            "YouTube blocked cloud datacenter stream extraction for this video. " +
-            "To enable YouTube links on Vercel, configure YOUTUBE_COOKIES in Vercel settings, or download the audio file and upload it directly via 'Upload File'."
-          );
+        console.warn("[LINK FETCHER] Primary extraction failed, testing fallback strategies...", ytErr.message);
+        let succeeded = false;
+
+        // Fallback 1: If cookies were passed but caused an auth/session error, retry android,web without cookies
+        if (cookiePath) {
+          try {
+            log("extract", "Retrying extraction without stale session cookies...");
+            await runExtraction(buildYtDlpArgs("android,web", false));
+            succeeded = true;
+          } catch (e: any) {
+            console.warn("[LINK FETCHER] Fallback without cookies also failed:", e.message);
+          }
         }
-        throw ytErr;
+
+        // Fallback 2: Standard yt-dlp client without player_client override
+        if (!succeeded) {
+          try {
+            log("extract", "Retrying with standard stream client...");
+            await runExtraction(buildYtDlpArgs(undefined, false));
+            succeeded = true;
+          } catch (e: any) {
+            console.warn("[LINK FETCHER] Standard client fallback failed:", e.message);
+          }
+        }
+
+        if (!succeeded) {
+          const fullErr = (ytErr.stderr || ytErr.message || "").toString();
+          if (
+            fullErr.includes("Sign in to confirm you're not a bot") ||
+            fullErr.includes("Sign in to confirm you’re not a bot")
+          ) {
+            throw new Error(
+              "YouTube blocked cloud datacenter stream extraction for this video. " +
+              "To enable YouTube links on Vercel, configure fresh YOUTUBE_COOKIES in Vercel settings, or download the audio file and upload it directly via 'Upload File'."
+            );
+          }
+          throw ytErr;
+        }
       }
 
       if (!existsSync(targetMp3)) {
