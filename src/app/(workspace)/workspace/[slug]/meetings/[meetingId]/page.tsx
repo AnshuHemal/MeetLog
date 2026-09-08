@@ -35,18 +35,27 @@ export default async function MeetingPage({ params }: MeetingPageProps) {
 
   if (!membership) notFound();
 
-  const meeting = await prisma.meeting.findUnique({
-    where: { id: meetingId },
-    include: {
-      segments: {
-        orderBy: { index: "asc" },
+  const [meeting, chatMessages] = await Promise.all([
+    prisma.meeting.findUnique({
+      where: { id: meetingId },
+      include: {
+        segments: {
+          orderBy: { index: "asc" },
+        },
+        speakerLabels: true,
+        actionItems: {
+          orderBy: { createdAt: "asc" },
+        },
       },
-      speakerLabels: true,
-      actionItems: {
-        orderBy: { createdAt: "asc" },
-      },
-    },
-  });
+    }),
+    prisma.aIChatMessage.findMany({
+      where: { meetingId },
+      orderBy: { createdAt: "asc" },
+    }).catch((err) => {
+      console.warn("[PAGE] Chat messages load non-fatal warning:", err?.message);
+      return [];
+    }),
+  ]);
 
   if (!meeting) notFound();
 
@@ -165,6 +174,12 @@ export default async function MeetingPage({ params }: MeetingPageProps) {
           taskDescription: item.taskDescription,
           assigneeName: item.assigneeName,
           status: item.status,
+        }))}
+        initialChatMessages={(chatMessages || []).map((msg) => ({
+          id: msg.id,
+          sender: msg.sender as "user" | "ai",
+          text: msg.text,
+          createdAt: msg.createdAt,
         }))}
         workspaceSlug={slug}
       />

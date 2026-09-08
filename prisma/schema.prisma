@@ -147,6 +147,7 @@ model Meeting {
   speakerLabels SpeakerLabel[]
   actionItems ActionItem[]
   presences UserPresence[]
+  aiChatMessages AIChatMessage[]
 
   @@index([status, nextRetryAt])
   @@map("meetings")
@@ -277,15 +278,18 @@ model UserPresence {
 model AIChatMessage {
   id          String   @id @default(cuid())
   workspaceId String
-  userId      String
+  meetingId   String?
+  userId      String?
   sender      String   // "user" | "ai"
   text        String   @db.Text
   citations   String?  @db.Text // JSON string array
   createdAt   DateTime @default(now())
 
   workspace Workspace @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
-  user      User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+  meeting   Meeting?  @relation(fields: [meetingId], references: [id], onDelete: Cascade)
+  user      User?     @relation(fields: [userId], references: [id], onDelete: SetNull)
 
+  @@index([meetingId, createdAt])
   @@index([workspaceId, createdAt])
   @@map("ai_chat_messages")
 }

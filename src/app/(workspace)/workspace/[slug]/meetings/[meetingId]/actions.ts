@@ -126,6 +126,36 @@ export async function askMeetingAIAction(
   userQuery: string,
   workspaceSlug: string
 ) {
+  // Find workspace to link chat message
+  const workspace = await prisma.workspace.findUnique({
+    where: { slug: workspaceSlug },
+    select: { id: true },
+  });
+
+  let userId: string | null = null;
+  try {
+    const { getSession } = await import("@/lib/session");
+    const session = await getSession();
+    if (session?.user?.id) userId = session.user.id;
+  } catch {}
+
+  // 1. Persist the user message to database
+  if (workspace) {
+    try {
+      await prisma.aIChatMessage.create({
+        data: {
+          workspaceId: workspace.id,
+          meetingId,
+          userId,
+          sender: "user",
+          text: userQuery,
+        },
+      });
+    } catch (dbErr) {
+      console.error("[ASK_AI] Failed to persist user message:", dbErr);
+    }
+  }
+
   const segments = await prisma.transcriptSegment.findMany({
     where: { meetingId },
     orderBy: { index: "asc" },
@@ -143,14 +173,49 @@ export async function askMeetingAIAction(
   const transcriptText = segments
     .map((seg) => {
       const name = speakerMap[seg.speakerId] || seg.speakerId;
-      return `${name}: ${seg.text}`;
+      const mins = Math.floor(seg.startTime / 60);
+      const secs = Math.floor(seg.startTime % 60);
+      const timeStr = `[${String(mins).padStart(2, "0")}:${String(secs).padStart(2, "0")}]`;
+      return `${timeStr} ${name}: ${seg.text}`;
     })
     .join("\n");
 
   const { answerTranscriptQuestion } = await import("@/lib/gemini");
   const aiAnswer = await answerTranscriptQuestion(transcriptText, userQuery);
 
+  // 2. Persist the AI response to database
+  if (workspace && aiAnswer) {
+    try {
+      await prisma.aIChatMessage.create({
+        data: {
+          workspaceId: workspace.id,
+          meetingId,
+          userId: null,
+          sender: "ai",
+          text: aiAnswer,
+        },
+      });
+    } catch (dbErr) {
+      console.error("[ASK_AI] Failed to persist AI message:", dbErr);
+    }
+  }
+
   return { success: true, answer: aiAnswer };
+}
+
+export async function clearMeetingChatAction(
+  meetingId: string,
+  workspaceSlug: string
+) {
+  try {
+    await prisma.aIChatMessage.deleteMany({
+      where: { meetingId },
+    });
+    return { success: true };
+  } catch (err: any) {
+    console.error("[CLEAR_CHAT] Error clearing chat:", err);
+    return { success: false, error: err.message };
+  }
 }
 
 export async function updateSegmentAnnotationAction(

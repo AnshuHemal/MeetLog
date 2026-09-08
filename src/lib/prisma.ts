@@ -3,8 +3,11 @@ import { PrismaPg } from "@prisma/adapter-pg";
 import { PrismaClient } from "@/generated/prisma/client";
 import { resolvePgPoolConfig } from "@/lib/db-config";
 
+const PRISMA_CLIENT_VERSION = 3;
+
 const globalForPrisma = globalThis as unknown as {
   prisma: PrismaClient | undefined;
+  prismaVersion: number | undefined;
 };
 
 function createPrismaClient() {
@@ -19,6 +22,16 @@ function createPrismaClient() {
         ? ["query", "error", "warn"]
         : ["error"],
   } as ConstructorParameters<typeof PrismaClient>[0]);
+}
+
+if (globalForPrisma.prismaVersion !== PRISMA_CLIENT_VERSION) {
+  if (globalForPrisma.prisma) {
+    try {
+      globalForPrisma.prisma.$disconnect();
+    } catch {}
+  }
+  globalForPrisma.prisma = undefined;
+  globalForPrisma.prismaVersion = PRISMA_CLIENT_VERSION;
 }
 
 export const prisma = globalForPrisma.prisma ?? createPrismaClient();

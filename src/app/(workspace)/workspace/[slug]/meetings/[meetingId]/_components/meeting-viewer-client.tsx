@@ -8,7 +8,7 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
-import { renameSpeakerAction, editSegmentAction, toggleActionItemAction, draftMeetingEmailAction, toggleMeetingPublicAction, askMeetingAIAction, updateSegmentAnnotationAction, analyzeMeetingSentimentAction, pingUserPresenceAction, syncMeetingDurationAction, retranscribeMeetingAction, generateSummaryAction } from "../actions";
+import { renameSpeakerAction, editSegmentAction, toggleActionItemAction, draftMeetingEmailAction, toggleMeetingPublicAction, askMeetingAIAction, clearMeetingChatAction, updateSegmentAnnotationAction, analyzeMeetingSentimentAction, pingUserPresenceAction, syncMeetingDurationAction, retranscribeMeetingAction, generateSummaryAction } from "../actions";
 import { exportToSlackAction, exportToJiraAction, exportToLinearAction } from "../export-actions";
 import { AudioSnippetClipperModal } from "@/components/meetings/audio-snippet-clipper";
 import { MeetingExportModal } from "@/components/meetings/meeting-export-modal";
@@ -107,11 +107,40 @@ function highlightMatchedText(text: string, query: string) {
   );
 }
 
+function normalizeMarkdownText(rawText: string): string {
+  if (!rawText) return "";
+  let formatted = rawText;
+
+  formatted = formatted.replace(/([^\n])\n(#{1,6}\s)/g, "$1\n\n$2");
+
+  formatted = formatted.replace(/([^\n*-\d])\n([*\-+]\s|\d+\.\s)/g, "$1\n\n$2");
+
+  formatted = formatted.replace(/\[(\d{1,2}:\d{2}(?::\d{2})?)\]/g, (match, timeStr) => {
+    const parts = timeStr.split(":").map(Number);
+    let seconds = 0;
+    if (parts.length === 3) {
+      seconds = parts[0] * 3600 + parts[1] * 60 + parts[2];
+    } else if (parts.length === 2) {
+      seconds = parts[0] * 60 + parts[1];
+    }
+    return `[${timeStr}](#seek-${seconds})`;
+  });
+
+  return formatted;
+}
+
 interface ActionItem {
   id: string;
   taskDescription: string;
   assigneeName: string | null;
   status: "PENDING" | "IN_PROGRESS" | "COMPLETED";
+}
+
+export interface ChatMessageItem {
+  id?: string;
+  sender: "user" | "ai";
+  text: string;
+  createdAt?: Date | string;
 }
 
 interface MeetingViewerClientProps {
@@ -132,6 +161,7 @@ interface MeetingViewerClientProps {
   actionItems: ActionItem[];
   workspaceSlug: string;
   isReadOnly?: boolean;
+  initialChatMessages?: ChatMessageItem[];
 }
 
 export function MeetingViewerClient({
@@ -141,6 +171,7 @@ export function MeetingViewerClient({
   actionItems: initialActionItems,
   workspaceSlug,
   isReadOnly = false,
+  initialChatMessages = [],
 }: MeetingViewerClientProps) {
   const [segments, setSegments] = useState<Segment[]>(initialSegments);
   const [speakerMap, setSpeakerMap] = useState<Record<string, string>>(initialSpeakerMap);
@@ -270,17 +301,45 @@ export function MeetingViewerClient({
   const [showShareMenu, setShowShareMenu] = useState(false);
   const [copiedShareLink, setCopiedShareLink] = useState(false);
 
-  const [chatMessages, setChatMessages] = useState<Array<{ sender: "user" | "ai"; text: string }>>([
-    { sender: "ai", text: "Hello! I am MeetLog AI. Ask me any question about this meeting, and I will search the transcript for answers." }
-  ]);
+  const welcomeMessage: ChatMessageItem = {
+    sender: "ai",
+    text: "Hello! I am MeetLog AI. Ask me any question about this meeting, and I will search the transcript for answers.",
+  };
+
+  const [chatMessages, setChatMessages] = useState<ChatMessageItem[]>(
+    initialChatMessages && initialChatMessages.length > 0
+      ? initialChatMessages
+      : [welcomeMessage]
+  );
   const [chatInput, setChatInput] = useState("");
   const [chatLoading, setChatLoading] = useState(false);
+  const [isClearingChat, setIsClearingChat] = useState(false);
+  const [copiedMsgIndex, setCopiedMsgIndex] = useState<number | null>(null);
+  const chatEndRef = useRef<HTMLDivElement>(null);
 
-  const handleSendChatMessage = async (e?: React.FormEvent) => {
+  useEffect(() => {
+    chatEndRef.current?.scrollIntoView({ behavior: "smooth" });
+  }, [chatMessages, chatLoading]);
+
+  const handleClearChat = async () => {
+    if (isClearingChat || isReadOnly) return;
+    if (!window.confirm("Are you sure you want to clear the AI chat history for this meeting?")) return;
+    setIsClearingChat(true);
+    try {
+      await clearMeetingChatAction(meeting.id, workspaceSlug);
+      setChatMessages([welcomeMessage]);
+    } catch (err) {
+      console.error(err);
+    } finally {
+      setIsClearingChat(false);
+    }
+  };
+
+  const handleSendChatMessage = async (e?: React.FormEvent, overrideText?: string) => {
     if (e) e.preventDefault();
-    if (!chatInput.trim() || chatLoading) return;
+    const userText = (overrideText || chatInput).trim();
+    if (!userText || chatLoading) return;
 
-    const userText = chatInput.trim();
     setChatMessages((prev) => [...prev, { sender: "user", text: userText }]);
     setChatInput("");
     setChatLoading(true);
@@ -1060,19 +1119,42 @@ export function MeetingViewerClient({
         </TabsContent>
 
         {}
+        {/* ASK AI TAB */}
         <TabsContent value="ask-ai" className="flex-1 flex flex-col overflow-hidden m-0 focus-visible:ring-0">
-          {}
-          <div className="flex-1 overflow-y-auto p-5 space-y-4 bg-muted/5 scrollbar-thin">
+          {/* Chat Header Bar */}
+          <div className="px-4 py-2 border-b border-border/60 bg-card/50 flex items-center justify-between shrink-0">
+            <div className="flex items-center gap-2">
+              <div className="size-2 rounded-full bg-emerald-500 animate-pulse" />
+              <span className="text-xs font-semibold text-foreground">AI Meeting Copilot</span>
+              <span className="text-3xs text-muted-foreground font-mono bg-muted/80 px-1.5 py-0.5 rounded">Gemini</span>
+            </div>
+            {chatMessages.length > 1 && !isReadOnly && (
+              <Button
+                variant="ghost"
+                size="sm"
+                onClick={handleClearChat}
+                disabled={isClearingChat || chatLoading}
+                className="h-6 px-2 text-3xs text-muted-foreground hover:text-destructive hover:bg-destructive/10 cursor-pointer transition-colors"
+                title="Clear conversation history"
+              >
+                {isClearingChat ? <Loader2 className="size-3 animate-spin mr-1" /> : <Trash2 className="size-3 mr-1" />}
+                Clear History
+              </Button>
+            )}
+          </div>
+
+          {/* Chat Messages */}
+          <div className="flex-1 overflow-y-auto p-4 space-y-4 bg-muted/5 scrollbar-thin">
             {chatMessages.map((msg, index) => {
               const isUser = msg.sender === "user";
               return (
                 <div
                   key={index}
-                  className={`flex items-start gap-2.5 max-w-[85%] ${
+                  className={`flex items-start gap-2.5 max-w-[90%] ${
                     isUser ? "ml-auto flex-row-reverse" : "mr-auto"
                   }`}
                 >
-                  {}
+                  {/* Avatar */}
                   <div
                     className={`size-7 rounded-lg flex items-center justify-center shrink-0 border text-3xs font-bold font-mono ${
                       isUser
@@ -1083,59 +1165,159 @@ export function MeetingViewerClient({
                     {isUser ? <User className="size-3.5" /> : <Bot className="size-3.5" />}
                   </div>
 
-                  {}
-                  <div
-                    className={`rounded-xl p-3 border text-sm leading-relaxed shadow-2xs select-text ${
-                      isUser
-                        ? "bg-primary text-primary-foreground border-primary/20 rounded-tr-none"
-                        : "bg-card text-foreground border-border rounded-tl-none"
-                    }`}
-                  >
-                    {isUser ? (
-                      msg.text
-                    ) : (
-                      <div className="space-y-2">
-                        {msg.text.split("\n\n").map((para, i) => {
-                          if (para.startsWith("- ") || para.startsWith("* ")) {
-                            return (
-                              <ul key={i} className="list-disc pl-4 space-y-1 my-1">
-                                {para.split("\n").map((line, j) => {
-                                  const cleanLine = line.replace(/^[\-\*]\s+/, "");
-                                  return (
-                                    <li key={j}>
-                                      {cleanLine.split(/(\*\*.*?\*\*)/g).map((part, idx) => {
-                                        if (part.startsWith("**") && part.endsWith("**")) {
-                                          return <strong key={idx} className="font-bold text-foreground">{part.slice(2, -2)}</strong>;
-                                        }
-                                        return part;
-                                      })}
-                                    </li>
-                                  );
-                                })}
-                              </ul>
-                            );
-                          }
-                          return (
-                            <p key={i} className="leading-relaxed">
-                              {para.split(/(\*\*.*?\*\*)/g).map((part, idx) => {
-                                if (part.startsWith("**") && part.endsWith("**")) {
-                                  return <strong key={idx} className="font-bold text-foreground">{part.slice(2, -2)}</strong>;
-                                }
-                                return part;
-                              })}
-                            </p>
-                          );
-                        })}
+                  {/* Message Bubble */}
+                  {isUser ? (
+                    <div className="rounded-2xl rounded-tr-none px-3.5 py-2.5 bg-primary text-primary-foreground border border-primary/20 text-[13.5px] leading-relaxed shadow-xs select-text">
+                      {msg.text}
+                    </div>
+                  ) : (
+                    <div className="rounded-2xl rounded-tl-none p-3.5 border bg-card text-foreground border-border shadow-xs select-text space-y-2 max-w-full">
+                      <div className="text-[13.5px] leading-relaxed">
+                        <ReactMarkdown
+                          components={{
+                            h1: ({ node, ...props }) => (
+                              <h1 className="text-base font-bold text-foreground mt-3 mb-1.5 pb-1 border-b border-border/50" {...props} />
+                            ),
+                            h2: ({ node, ...props }) => (
+                              <h2 className="text-sm font-bold text-foreground mt-3 mb-1 pb-0.5 border-b border-border/30" {...props} />
+                            ),
+                            h3: ({ node, ...props }) => (
+                              <h3 className="text-sm font-semibold text-primary mt-2.5 mb-1" {...props} />
+                            ),
+                            h4: ({ node, ...props }) => (
+                              <h4 className="text-xs font-semibold text-foreground uppercase tracking-wider mt-2 mb-0.5" {...props} />
+                            ),
+                            p: ({ node, ...props }) => (
+                              <p className="mb-2 last:mb-0 text-foreground/90 leading-relaxed text-[13.5px]" {...props} />
+                            ),
+                            ul: ({ node, ...props }) => (
+                              <ul className="list-disc pl-5 my-2 space-y-1.5 text-[13.5px] text-foreground/90" {...props} />
+                            ),
+                            ol: ({ node, ...props }) => (
+                              <ol className="list-decimal pl-5 my-2 space-y-1.5 text-[13.5px] text-foreground/90" {...props} />
+                            ),
+                            li: ({ node, ...props }) => (
+                              <li className="leading-relaxed pl-0.5" {...props} />
+                            ),
+                            strong: ({ node, ...props }) => (
+                              <strong className="font-semibold text-foreground" {...props} />
+                            ),
+                            em: ({ node, ...props }) => (
+                              <em className="italic text-foreground/85" {...props} />
+                            ),
+                            code: ({ node, className, children, ...props }) => (
+                              <code className="bg-muted px-1.5 py-0.5 rounded text-xs font-mono border border-border/60 text-primary" {...props}>
+                                {children}
+                              </code>
+                            ),
+                            pre: ({ node, children, ...props }) => (
+                              <pre className="bg-muted/70 p-3 rounded-lg border border-border/60 overflow-x-auto text-xs font-mono my-2 text-foreground/90" {...props}>
+                                {children}
+                              </pre>
+                            ),
+                            blockquote: ({ node, ...props }) => (
+                              <blockquote className="border-l-2 border-primary/60 pl-3 italic my-2 text-muted-foreground text-xs" {...props} />
+                            ),
+                            hr: () => <hr className="my-2.5 border-border/50" />,
+                            a: ({ href, children, ...props }) => {
+                              if (href?.startsWith("#seek-")) {
+                                const seconds = Number(href.replace("#seek-", ""));
+                                return (
+                                  <button
+                                    type="button"
+                                    onClick={(e) => {
+                                      e.preventDefault();
+                                      seekToAndPlay(seconds);
+                                    }}
+                                    className="inline-flex items-center gap-1 px-1.5 py-0.5 mx-0.5 rounded-md bg-primary/10 hover:bg-primary text-primary hover:text-primary-foreground font-mono text-xs font-semibold border border-primary/20 transition-all cursor-pointer select-none"
+                                    title={`Jump audio to ${children}`}
+                                  >
+                                    <Play className="size-2.5 fill-current" />
+                                    <span>{children}</span>
+                                  </button>
+                                );
+                              }
+                              return (
+                                <a
+                                  href={href}
+                                  target="_blank"
+                                  rel="noopener noreferrer"
+                                  className="text-primary underline underline-offset-2 hover:text-primary/80"
+                                  {...props}
+                                >
+                                  {children}
+                                </a>
+                              );
+                            },
+                          }}
+                        >
+                          {normalizeMarkdownText(msg.text)}
+                        </ReactMarkdown>
                       </div>
-                    )}
-                  </div>
+
+                      {/* Copy button on AI responses */}
+                      {index > 0 && (
+                        <div className="flex items-center justify-end pt-1 mt-1 border-t border-border/30">
+                          <button
+                            type="button"
+                            onClick={() => {
+                              navigator.clipboard.writeText(msg.text);
+                              setCopiedMsgIndex(index);
+                              setTimeout(() => setCopiedMsgIndex(null), 2000);
+                            }}
+                            className="text-3xs text-muted-foreground hover:text-foreground flex items-center gap-1 px-1.5 py-0.5 rounded hover:bg-muted/60 transition-colors cursor-pointer"
+                            title="Copy response"
+                          >
+                            {copiedMsgIndex === index ? (
+                              <>
+                                <Check className="size-3 text-emerald-500" />
+                                <span className="text-emerald-500">Copied</span>
+                              </>
+                            ) : (
+                              <>
+                                <Copy className="size-3" />
+                                <span>Copy</span>
+                              </>
+                            )}
+                          </button>
+                        </div>
+                      )}
+                    </div>
+                  )}
                 </div>
               );
             })}
 
-            {}
+            {/* Suggested Prompts on First Load */}
+            {chatMessages.length <= 1 && (
+              <div className="pt-2 px-1 space-y-2">
+                <p className="text-2xs font-semibold uppercase tracking-wider text-muted-foreground flex items-center gap-1.5">
+                  <Sparkles className="size-3 text-primary" /> Suggested Questions
+                </p>
+                <div className="flex flex-wrap gap-1.5">
+                  {[
+                    "Provide a summary of this meeting",
+                    "What are the key action items and owners?",
+                    "What decisions were made in this call?",
+                    "Were any risks or blockers discussed?",
+                  ].map((prompt, pIdx) => (
+                    <button
+                      key={pIdx}
+                      type="button"
+                      onClick={() => handleSendChatMessage(undefined, prompt)}
+                      disabled={chatLoading}
+                      className="text-xs px-2.5 py-1.5 rounded-lg border border-border/80 bg-background hover:bg-muted/60 hover:border-primary/40 text-foreground/80 hover:text-foreground transition-all text-left cursor-pointer flex items-center gap-1.5 shadow-2xs disabled:opacity-50"
+                    >
+                      <span>{prompt}</span>
+                    </button>
+                  ))}
+                </div>
+              </div>
+            )}
+
+            {/* Typing Loader */}
             {chatLoading && (
-              <div className="flex items-start gap-2.5 max-w-[85%] mr-auto">
+              <div className="flex items-start gap-2.5 max-w-[90%] mr-auto">
                 <div className="size-7 rounded-lg flex items-center justify-center shrink-0 border bg-primary/10 text-primary border-primary/20">
                   <Bot className="size-3.5 animate-bounce" />
                 </div>
@@ -1146,9 +1328,10 @@ export function MeetingViewerClient({
                 </div>
               </div>
             )}
+            <div ref={chatEndRef} />
           </div>
 
-          {}
+          {/* Chat Input */}
           <form
             onSubmit={handleSendChatMessage}
             className="px-4 py-3 border-t border-border bg-card flex items-center gap-2 shrink-0"

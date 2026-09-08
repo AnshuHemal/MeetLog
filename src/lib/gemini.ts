@@ -308,13 +308,21 @@ export async function answerTranscriptQuestion(
   transcriptText: string,
   userQuery: string
 ): Promise<string> {
-  const prompt = `You are a helpful AI assistant inside MeetLog.
-Answer the user's question accurately and concisely based strictly on the provided meeting transcript.
+  const prompt = `You are a helpful, expert AI assistant inside MeetLog.
+Analyze the provided meeting transcript and answer the user's question accurately, thoroughly, and professionally.
+
+FORMATTING REQUIREMENTS:
+- Format your response in clean, beautiful Markdown.
+- Organize your answer with clear section headings (e.g., "### 1. Section Title" or "### Summary").
+- Use bullet points (- or *) for distinct items, lists, or takeaways. Always place each bullet point on its own line with a blank line between sections.
+- Bold key terms, speaker names, important metrics, and action items.
+- When referencing specific moments, quotes, or discussions, include clickable timestamp citations in brackets like [MM:SS] (e.g., [02:45] or [14:10]) based on the transcript timestamps.
+- If the requested information was not mentioned in the transcript, state that clearly and politely.
 
 Transcript:
 ${transcriptText}
 
-Question: "${userQuery}"
+User Question: "${userQuery}"
 `;
 
   try {
