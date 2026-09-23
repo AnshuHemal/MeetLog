@@ -487,8 +487,19 @@ export async function generateSummaryAction(meetingId: string, workspaceSlug: st
       }
     });
 
+    const duration =
+      meeting.durationSeconds ||
+      meeting.segments.reduce((max, s) => Math.max(max, s.endTime || 0), 0);
+
+    const timestampedSegments = meeting.segments.map((s) => ({
+      startTime: s.startTime,
+      endTime: s.endTime,
+      speakerId: s.speakerId,
+      text: s.text,
+    }));
+
     try {
-      const chapters = await generateMeetingChapters(fullTranscript);
+      const chapters = await generateMeetingChapters(timestampedSegments, duration);
       if (chapters && chapters.length > 0) {
         await prisma.meeting.update({
           where: { id: meetingId },
@@ -501,6 +512,63 @@ export async function generateSummaryAction(meetingId: string, workspaceSlug: st
     return { success: true };
   } catch (err: any) {
     return { success: false, error: err.message || "Failed to generate summary." };
+  }
+}
+
+export async function regenerateMeetingChaptersAction(
+  meetingId: string,
+  workspaceSlug: string
+) {
+  const user = await requireUser();
+
+  const membership = await prisma.workspaceMember.findFirst({
+    where: { userId: user.id, workspace: { slug: workspaceSlug } },
+  });
+  if (!membership) {
+    return { success: false, error: "Not a member of this workspace." };
+  }
+
+  const meeting = await prisma.meeting.findUnique({
+    where: { id: meetingId },
+    include: {
+      segments: {
+        orderBy: { index: "asc" },
+      },
+    },
+  });
+
+  if (!meeting || meeting.segments.length === 0) {
+    return { success: false, error: "No transcript segments found to generate chapters." };
+  }
+
+  try {
+    const { generateMeetingChapters } = await import("@/lib/gemini");
+    const duration =
+      meeting.durationSeconds ||
+      meeting.segments.reduce((max, s) => Math.max(max, s.endTime || 0), 0);
+
+    const timestampedSegments = meeting.segments.map((s) => ({
+      startTime: s.startTime,
+      endTime: s.endTime,
+      speakerId: s.speakerId,
+      text: s.text,
+    }));
+
+    const chapters = await generateMeetingChapters(timestampedSegments, duration);
+
+    if (chapters && chapters.length > 0) {
+      await prisma.meeting.update({
+        where: { id: meetingId },
+        data: { chaptersJson: JSON.stringify(chapters) },
+      });
+
+      revalidatePath(`/workspace/${workspaceSlug}/meetings/${meetingId}`);
+      return { success: true, chapters };
+    }
+
+    return { success: false, error: "Could not generate chapters from transcript." };
+  } catch (err: any) {
+    return { success: false, error: err.message || "Failed to generate chapters." };
   }
 }
 

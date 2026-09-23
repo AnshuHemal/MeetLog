@@ -6,6 +6,8 @@ import { formatSecondsToTime } from "@/lib/time-utils";
 interface Chapter {
   title: string;
   startTime: number;
+  endTime?: number;
+  summary?: string;
 }
 
 interface ModernWaveformVisualizerProps {
@@ -207,16 +209,34 @@ export const ModernWaveformVisualizer = React.memo(function ModernWaveformVisual
       />
 
       {}
-      {hoverState.visible && audioDuration > 0 && (
-        <div
-          className="absolute -top-7 -translate-x-1/2 bg-popover text-popover-foreground border border-border px-2 py-0.5 rounded text-[11px] font-bold shadow-lg pointer-events-none font-mono z-40 whitespace-nowrap"
-          style={{
-            left: `${hoverState.x}px`,
-          }}
-        >
-          {formatSecondsToTime(hoverState.time, audioDuration >= 3600)}
-        </div>
-      )}
+      {hoverState.visible && audioDuration > 0 && (() => {
+        const hoveredChapter = chapters.find((c, i) => {
+          const nextStart = chapters[i + 1]?.startTime ?? audioDuration;
+          const end = typeof c.endTime === "number" ? c.endTime : nextStart;
+          return hoverState.time >= c.startTime && hoverState.time <= end;
+        });
+
+        return (
+          <div
+            className="absolute -top-8 -translate-x-1/2 bg-popover/95 backdrop-blur-md text-popover-foreground border border-border px-2.5 py-1 rounded-md text-[11px] font-medium shadow-xl pointer-events-none z-40 whitespace-nowrap flex items-center gap-1.5 transition-all"
+            style={{
+              left: `${hoverState.x}px`,
+            }}
+          >
+            <span className="font-mono font-bold text-primary">
+              {formatSecondsToTime(hoverState.time, audioDuration >= 3600)}
+            </span>
+            {hoveredChapter?.title && (
+              <>
+                <span className="text-muted-foreground/60 select-none">•</span>
+                <span className="font-medium text-foreground max-w-[200px] truncate">
+                  {hoveredChapter.title}
+                </span>
+              </>
+            )}
+          </div>
+        );
+      })()}
     </div>
   );
 });

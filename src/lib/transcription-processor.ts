@@ -197,6 +197,11 @@ export async function processCompletedTranscription(meetingId: string) {
     await writeTranscriptSegments(meetingId, combinedEntries);
 
     // Pre-check: If no active Gemini keys are available right now, SKIP immediately without waiting!
+    const maxSegmentDuration = combinedEntries.reduce((max, entry) => {
+      const end = parseFloat(entry.end_time_seconds?.toString() || "0");
+      return Math.max(max, isNaN(end) ? 0 : end);
+    }, 0);
+
     const { getAvailableKey } = await import("./key-pool");
     const activeKey = await getAvailableKey("GEMINI");
 
@@ -217,7 +222,7 @@ export async function processCompletedTranscription(meetingId: string) {
     } else {
       try {
         addMeetingLog(meetingId, "ai", "INSIGHTS", "Generating executive summary, structured chapters, and action items via Gemini...");
-        await generateAIInsights(meetingId, combinedEntries);
+        await generateAIInsights(meetingId, combinedEntries, maxSegmentDuration);
         addMeetingLog(meetingId, "success", "INSIGHTS", "AI Insights & Chapters generated successfully!");
       } catch (insightsErr: any) {
         console.warn(`[TRANSCRIPTION PROCESSOR] AI Insights skipped because keys expired/exhausted:`, insightsErr.message);
@@ -231,11 +236,6 @@ export async function processCompletedTranscription(meetingId: string) {
         }).catch(() => {});
       }
     }
-
-    const maxSegmentDuration = combinedEntries.reduce((max, entry) => {
-      const end = parseFloat(entry.end_time_seconds?.toString() || "0");
-      return Math.max(max, isNaN(end) ? 0 : end);
-    }, 0);
 
     await prisma.meeting.update({
       where: { id: meetingId },
@@ -474,6 +474,7 @@ async function generateAIInsights(
     end_time_seconds: string | number;
     transcript: string;
   }>,
+  durationSeconds?: number
 ) {
   const fullTranscript = entries
     .map((e) => `[${normalizeSpeakerId(e.speaker_id)}] ${e.transcript}`)
@@ -532,9 +533,20 @@ async function generateAIInsights(
     }).catch(() => {});
   }
 
-  log("Generating chapters with Gemini AI...");
+  log("Generating chapters with Gemini AI across full audio timeline...");
   try {
-    const chapters = await generateMeetingChapters(fullTranscript);
+    const timestampedSegments = entries.map((entry) => {
+      const start = parseFloat(entry.start_time_seconds?.toString() || "0");
+      const end = parseFloat(entry.end_time_seconds?.toString() || "0");
+      return {
+        startTime: isNaN(start) ? 0 : start,
+        endTime: isNaN(end) ? 0 : end,
+        speakerId: normalizeSpeakerId(entry.speaker_id),
+        text: entry.transcript || "",
+      };
+    });
+
+    const chapters = await generateMeetingChapters(timestampedSegments, durationSeconds);
     if (chapters && chapters.length > 0) {
       await prisma.meeting.update({
         where: { id: meetingId },
@@ -542,7 +554,7 @@ async function generateAIInsights(
           chaptersJson: JSON.stringify(chapters),
         },
       });
-      log(`Saved ${chapters.length} chapters.`);
+      log(`Saved ${chapters.length} chapters covering full meeting duration.`);
     }
   } catch (err: any) {
     log(`Chapter generation failed: ${err.message}. Continuing.`);

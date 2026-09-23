@@ -6,6 +6,7 @@ import {
   reportKeyExhausted,
   parseGoogleRetryDelay,
 } from "./key-pool";
+import { formatSecondsToTime } from "./time-utils";
 
 export interface GeneratedMeetingInsights {
   summary: string;
@@ -250,32 +251,206 @@ ${transcriptText}
   }
 }
 
-export async function generateMeetingChapters(
-  transcriptText: string
-): Promise<GeneratedMeetingChapter[]> {
-  const prompt = `You are an expert meeting analyst. Analyze the following meeting transcript.
-Divide the meeting into distinct, sequential chapters based on when topics switch.
+export function normalizeMeetingChapters(
+  rawChapters: GeneratedMeetingChapter[],
+  totalDurationSeconds?: number
+): GeneratedMeetingChapter[] {
+  if (!rawChapters || !Array.isArray(rawChapters) || rawChapters.length === 0) {
+    if (totalDurationSeconds && totalDurationSeconds > 0) {
+      return [
+        {
+          startTime: 0.0,
+          endTime: Math.round(totalDurationSeconds * 10) / 10,
+          title: "Full Meeting Discussion",
+          summary: "Complete recording discussion.",
+        },
+      ];
+    }
+    return [];
+  }
 
-Return your output STRICTLY as a JSON array of objects:
+  // Filter valid entries with title and valid numbers
+  const valid = rawChapters.filter(
+    (c) =>
+      c &&
+      typeof c.title === "string" &&
+      c.title.trim().length > 0 &&
+      !isNaN(Number(c.startTime)) &&
+      !isNaN(Number(c.endTime))
+  );
+
+  if (valid.length === 0) {
+    if (totalDurationSeconds && totalDurationSeconds > 0) {
+      return [
+        {
+          startTime: 0.0,
+          endTime: Math.round(totalDurationSeconds * 10) / 10,
+          title: "Full Meeting Discussion",
+          summary: "Complete recording discussion.",
+        },
+      ];
+    }
+    return [];
+  }
+
+  // Sort by startTime
+  valid.sort((a, b) => Number(a.startTime) - Number(b.startTime));
+
+  const result: GeneratedMeetingChapter[] = [];
+
+  for (let i = 0; i < valid.length; i++) {
+    const raw = valid[i];
+    let start = Number(raw.startTime);
+    let end = Number(raw.endTime);
+
+    // If first chapter, ensure start is strictly 0.0
+    if (i === 0) {
+      start = 0.0;
+    } else {
+      // Stitch seamlessly to previous chapter end
+      const prevEnd = result[i - 1].endTime;
+      start = prevEnd;
+    }
+
+    // Ensure end is strictly greater than start
+    if (end <= start) {
+      end = start + 30.0;
+    }
+
+    // If total duration is known, clamp end so it doesn't overshoot
+    if (totalDurationSeconds && totalDurationSeconds > 0 && end > totalDurationSeconds) {
+      end = totalDurationSeconds;
+    }
+
+    result.push({
+      startTime: Math.round(start * 10) / 10,
+      endTime: Math.round(end * 10) / 10,
+      title: raw.title.trim(),
+      summary: (raw.summary || "").trim(),
+    });
+  }
+
+  // Ensure full coverage to totalDurationSeconds if specified
+  if (totalDurationSeconds && totalDurationSeconds > 0 && result.length > 0) {
+    const lastChapter = result[result.length - 1];
+    const diff = totalDurationSeconds - lastChapter.endTime;
+
+    if (diff > 45) {
+      // If gap at the end is more than 45s, add a wrap-up chapter
+      result.push({
+        startTime: lastChapter.endTime,
+        endTime: Math.round(totalDurationSeconds * 10) / 10,
+        title: "Closing Discussion & Next Steps",
+        summary: "Meeting conclusions, action review, and closing remarks.",
+      });
+    } else if (diff > 0) {
+      // Minor difference: extend the last chapter to the exact end
+      lastChapter.endTime = Math.round(totalDurationSeconds * 10) / 10;
+    }
+  }
+
+  return result;
+}
+
+export async function generateMeetingChapters(
+  transcriptInput:
+    | string
+    | Array<{
+        startTime: number;
+        endTime: number;
+        speakerId?: string;
+        text: string;
+      }>,
+  totalDurationSeconds?: number
+): Promise<GeneratedMeetingChapter[]> {
+  let formattedTranscript = "";
+  let effectiveDuration = totalDurationSeconds || 0;
+
+  if (Array.isArray(transcriptInput)) {
+    formattedTranscript = transcriptInput
+      .map(
+        (seg) =>
+          `[${formatSecondsToTime(seg.startTime)}] [${seg.speakerId || "Speaker"}]: ${seg.text}`
+      )
+      .join("\n");
+    if (!effectiveDuration && transcriptInput.length > 0) {
+      const lastSeg = transcriptInput[transcriptInput.length - 1];
+      effectiveDuration = Math.max(lastSeg.endTime || 0, lastSeg.startTime || 0);
+    }
+  } else {
+    formattedTranscript = transcriptInput;
+  }
+
+  // If duration still not provided, detect the highest [MM:SS] or [HH:MM:SS] timestamp from text
+  if (!effectiveDuration || effectiveDuration <= 0) {
+    const timestampMatches = Array.from(
+      formattedTranscript.matchAll(/\[(\d{1,2}):(\d{2})(?::(\d{2}))?\]/g)
+    );
+    let maxFound = 0;
+    for (const match of timestampMatches) {
+      let secs = 0;
+      if (match[3]) {
+        secs =
+          parseInt(match[1], 10) * 3600 +
+          parseInt(match[2], 10) * 60 +
+          parseInt(match[3], 10);
+      } else {
+        secs = parseInt(match[1], 10) * 60 + parseInt(match[2], 10);
+      }
+      if (secs > maxFound) maxFound = secs;
+    }
+    if (maxFound > 0) {
+      effectiveDuration = maxFound;
+    }
+  }
+
+  const durationStr =
+    effectiveDuration > 0
+      ? `${formatSecondsToTime(effectiveDuration)} (${Math.round(effectiveDuration)} seconds)`
+      : "the entire recording";
+
+  const prompt = `You are an expert executive meeting analyst and chapter indexer.
+Analyze the following meeting transcript and divide it into clear, coherent, chronological chapters covering the ENTIRE audio recording from start to finish.
+
+CRITICAL REQUIREMENTS:
+1. FULL RECORDING COVERAGE: The meeting recording lasts ${durationStr}. Your chapters MUST span the ENTIRE recording from 0.0 seconds to ${effectiveDuration > 0 ? effectiveDuration.toFixed(1) : "the end of the meeting"} seconds. Do NOT stop after the first few minutes or ignore the later portions of the meeting.
+2. CONTINUOUS TIMELINE:
+   - The first chapter MUST start at "startTime": 0.0.
+   - Each subsequent chapter's "startTime" must seamlessly connect with the previous chapter's "endTime" without unindexed gaps.
+   - The final chapter MUST end at "endTime": ${effectiveDuration > 0 ? effectiveDuration.toFixed(1) : "the end timestamp"}.
+3. PRECISE TIMESTAMPS: Use the bracketed timestamps [MM:SS] present throughout the transcript to determine accurate start and end times in seconds (e.g., [03:45] = 225.0, [14:20] = 860.0).
+4. LOGICAL CHAPTER COUNT: Create between 4 and 12 distinct chapters depending on topic shifts across the whole meeting (each chapter typically 2 to 6 minutes long).
+5. PROFESSIONAL TITLES & SUMMARIES:
+   - "title": A concise, punchy, professional headline (3-7 words) summarizing the core topic.
+   - "summary": A crisp 1-2 sentence description highlighting key decisions, updates, or discussions during that segment.
+
+Return your output STRICTLY as a JSON array of objects with no markdown wrapping or extraneous text:
 [
   {
     "startTime": 0.0,
-    "endTime": 120.0,
-    "title": "Topic Header",
-    "summary": "Description of the discussion."
+    "endTime": 185.0,
+    "title": "Introductions & Meeting Agenda",
+    "summary": "The team aligns on meeting objectives and reviews initial metrics."
+  },
+  {
+    "startTime": 185.0,
+    "endTime": ${effectiveDuration > 0 ? effectiveDuration.toFixed(1) : "600.0"},
+    "title": "Project Architecture & Key Discussion",
+    "summary": "Detailed review of client workflows, technical deliverables, and next steps."
   }
 ]
 
 Transcript:
-${transcriptText}
+${formattedTranscript}
 `;
 
   try {
-    const textResult = await callGeminiWithPool(prompt, true, 0.25);
-    return cleanParseJson<GeneratedMeetingChapter[]>(textResult, []);
+    const textResult = await callGeminiWithPool(prompt, true, 0.2);
+    const parsed = cleanParseJson<GeneratedMeetingChapter[]>(textResult, []);
+    return normalizeMeetingChapters(parsed, effectiveDuration > 0 ? effectiveDuration : undefined);
   } catch (error: any) {
     console.error("Error generating chapters from Gemini pool:", error.message);
-    return [];
+    return normalizeMeetingChapters([], effectiveDuration > 0 ? effectiveDuration : undefined);
   }
 }
 

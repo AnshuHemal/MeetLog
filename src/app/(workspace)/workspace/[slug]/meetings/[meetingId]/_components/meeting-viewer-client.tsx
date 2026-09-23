@@ -8,7 +8,7 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
-import { renameSpeakerAction, editSegmentAction, toggleActionItemAction, draftMeetingEmailAction, toggleMeetingPublicAction, askMeetingAIAction, clearMeetingChatAction, updateSegmentAnnotationAction, pingUserPresenceAction, syncMeetingDurationAction, retranscribeMeetingAction, generateSummaryAction } from "../actions";
+import { renameSpeakerAction, editSegmentAction, toggleActionItemAction, draftMeetingEmailAction, toggleMeetingPublicAction, askMeetingAIAction, clearMeetingChatAction, updateSegmentAnnotationAction, pingUserPresenceAction, syncMeetingDurationAction, retranscribeMeetingAction, generateSummaryAction, regenerateMeetingChaptersAction } from "../actions";
 import { AudioSnippetClipperModal } from "@/components/meetings/audio-snippet-clipper";
 import { MeetingExportModal } from "@/components/meetings/meeting-export-modal";
 import { ModernWaveformVisualizer } from "@/components/meetings/modern-waveform-visualizer";
@@ -217,10 +217,17 @@ export function MeetingViewerClient({
 
   const [isExportModalOpen, setIsExportModalOpen] = useState(false);
 
+  const [localChaptersJson, setLocalChaptersJson] = useState<string | null>(meeting.chaptersJson || null);
+  const [isRegeneratingChapters, setIsRegeneratingChapters] = useState(false);
+
+  useEffect(() => {
+    setLocalChaptersJson(meeting.chaptersJson || null);
+  }, [meeting.chaptersJson]);
+
   const chapters = useMemo(() => {
-    if (!meeting.chaptersJson) return [];
+    if (!localChaptersJson) return [];
     try {
-      return JSON.parse(meeting.chaptersJson) as Array<{
+      return JSON.parse(localChaptersJson) as Array<{
         startTime: number;
         endTime: number;
         title: string;
@@ -230,7 +237,24 @@ export function MeetingViewerClient({
       console.error("Failed to parse chapters JSON", e);
       return [];
     }
-  }, [meeting.chaptersJson]);
+  }, [localChaptersJson]);
+
+  const handleRegenerateChapters = async () => {
+    if (isRegeneratingChapters || isReadOnly) return;
+    setIsRegeneratingChapters(true);
+    try {
+      const res = await regenerateMeetingChaptersAction(meeting.id, workspaceSlug);
+      if (res.success && res.chapters) {
+        setLocalChaptersJson(JSON.stringify(res.chapters));
+      } else {
+        alert(res.error || "Failed to regenerate chapters.");
+      }
+    } catch (err: any) {
+      alert(err.message || "An error occurred while generating chapters.");
+    } finally {
+      setIsRegeneratingChapters(false);
+    }
+  };
 
   const [isDraftingEmail, setIsDraftingEmail] = useState(false);
   const [emailDraft, setEmailDraft] = useState("");
@@ -944,39 +968,123 @@ export function MeetingViewerClient({
         </div>
 
         {}
-        <TabsContent value="chapters" className="flex-1 overflow-y-auto p-5 focus-visible:ring-0 m-0">
-          <h3 className="text-base font-bold text-foreground border-b border-border pb-2 mb-4">
-            Meeting Chapters
-          </h3>
+        <TabsContent value="chapters" className="flex-1 overflow-y-auto p-4 sm:p-5 focus-visible:ring-0 m-0">
+          <div className="flex items-center justify-between border-b border-border pb-3 mb-4">
+            <div>
+              <h3 className="text-base font-bold text-foreground flex items-center gap-2">
+                <Compass className="size-4 text-primary" /> Meeting Chapters
+              </h3>
+              <p className="text-xs text-muted-foreground mt-0.5">
+                {chapters.length > 0
+                  ? `${chapters.length} chapters covering full meeting (${formatDurationHuman(audioDuration || meeting.durationSeconds || 0)})`
+                  : "Topic navigation & breakdown across recording"}
+              </p>
+            </div>
+            {!isReadOnly && (
+              <Button
+                variant="outline"
+                size="sm"
+                onClick={handleRegenerateChapters}
+                disabled={isRegeneratingChapters}
+                className="h-8 px-2.5 sm:px-3 text-xs font-semibold gap-1.5 rounded-lg border-border hover:bg-muted cursor-pointer transition-all shadow-xs shrink-0"
+                title="Re-analyze meeting audio with Gemini AI to generate complete chapters covering the whole recording"
+              >
+                {isRegeneratingChapters ? (
+                  <>
+                    <Loader2 className="size-3.5 animate-spin text-primary" />
+                    <span>Analyzing...</span>
+                  </>
+                ) : (
+                  <>
+                    <Sparkles className="size-3.5 text-primary" />
+                    <span>Re-analyze</span>
+                  </>
+                )}
+              </Button>
+            )}
+          </div>
           
           {chapters.length === 0 ? (
-            <p className="text-sm text-muted-foreground text-center py-6">
-              No chapters generated for this meeting.
-            </p>
+            <div className="flex flex-col items-center justify-center py-12 px-4 text-center border border-dashed border-border rounded-xl bg-card/40 my-2">
+              <div className="size-12 rounded-full bg-primary/10 flex items-center justify-center mb-3">
+                <Compass className="size-6 text-primary" />
+              </div>
+              <p className="text-sm font-semibold text-foreground">
+                No chapters generated yet
+              </p>
+              <p className="text-xs text-muted-foreground mt-1 max-w-xs leading-relaxed">
+                Generate AI chapters to navigate topic switches and jump directly to key discussions across the full timeline.
+              </p>
+              {!isReadOnly && (
+                <Button
+                  onClick={handleRegenerateChapters}
+                  disabled={isRegeneratingChapters}
+                  size="sm"
+                  className="mt-4 gap-1.5 text-xs font-semibold cursor-pointer shadow-xs"
+                >
+                  {isRegeneratingChapters ? (
+                    <>
+                      <Loader2 className="size-3.5 animate-spin" />
+                      Analyzing Timeline...
+                    </>
+                  ) : (
+                    <>
+                      <Sparkles className="size-3.5" />
+                      Analyze Chapters Now
+                    </>
+                  )}
+                </Button>
+              )}
+            </div>
           ) : (
-            <div className="space-y-3">
+            <div className="space-y-2.5">
               {chapters.map((chapter, idx) => {
                 const isActive = currentTime >= chapter.startTime && currentTime <= chapter.endTime;
+                const chapterDuration = Math.max(0, chapter.endTime - chapter.startTime);
                 return (
                   <div
                     key={idx}
                     onClick={() => seekToAndPlay(chapter.startTime)}
-                    className={`group flex flex-col gap-1.5 rounded-lg border p-3 shadow-xs hover:border-primary/50 transition-all cursor-pointer select-none ${
+                    className={`group relative flex flex-col gap-1.5 rounded-xl border p-3.5 shadow-xs hover:border-primary/60 transition-all cursor-pointer select-none ${
                       isActive
-                        ? "border-primary bg-primary/5 ring-1 ring-primary"
-                        : "border-border bg-card hover:bg-muted/10"
+                        ? "border-primary bg-primary/5 ring-1 ring-primary shadow-sm"
+                        : "border-border bg-card hover:bg-muted/15"
                     }`}
                   >
-                    <div className="flex items-center justify-between gap-2">
-                      <span className="font-semibold text-sm text-foreground group-hover:text-primary transition-colors">
-                        {chapter.title}
-                      </span>
-                      <span className="text-xs font-mono font-bold bg-muted text-muted-foreground px-2 py-0.5 rounded-md border border-border/50 shrink-0">
-                        {formatTime(chapter.startTime)} - {formatTime(chapter.endTime)}
-                      </span>
+                    <div className="flex items-start justify-between gap-3">
+                      <div className="flex items-center gap-2.5 min-w-0">
+                        <span
+                          className={`flex size-6 shrink-0 items-center justify-center rounded-full text-[11px] font-bold transition-colors ${
+                            isActive
+                              ? "bg-primary text-primary-foreground shadow-xs"
+                              : "bg-muted text-muted-foreground group-hover:bg-primary/10 group-hover:text-primary"
+                          }`}
+                        >
+                          {idx + 1}
+                        </span>
+                        <span className="font-semibold text-sm text-foreground group-hover:text-primary transition-colors truncate">
+                          {chapter.title}
+                        </span>
+                      </div>
+                      <div className="flex items-center gap-1.5 shrink-0">
+                        {isActive && (
+                          <span className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded text-[10px] font-bold bg-primary/15 text-primary border border-primary/30 tracking-wider uppercase">
+                            <span className="size-1.5 rounded-full bg-primary animate-ping" />
+                            Playing
+                          </span>
+                        )}
+                        <span className="text-xs font-mono font-bold bg-muted text-muted-foreground px-2 py-0.5 rounded-md border border-border/50">
+                          {formatTime(chapter.startTime)} - {formatTime(chapter.endTime)}
+                        </span>
+                        {chapterDuration > 0 && (
+                          <span className="text-[11px] font-mono text-muted-foreground/80 hidden sm:inline">
+                            ({formatDurationHuman(chapterDuration)})
+                          </span>
+                        )}
+                      </div>
                     </div>
                     {chapter.summary && (
-                      <p className="text-xs text-muted-foreground leading-relaxed">
+                      <p className="text-xs text-muted-foreground leading-relaxed pl-8">
                         {chapter.summary}
                       </p>
                     )}
