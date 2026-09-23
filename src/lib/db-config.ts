@@ -38,5 +38,8 @@ export function resolvePgPoolConfig(): PoolConfig {
   return {
     connectionString,
     ...(isLocal ? { ssl: false } : {}),
+    connectionTimeoutMillis: 30000,
+    idleTimeoutMillis: 30000,
+    max: 10,
   };
 }

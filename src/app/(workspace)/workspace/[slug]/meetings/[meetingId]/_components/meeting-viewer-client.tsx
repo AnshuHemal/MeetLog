@@ -1679,19 +1679,19 @@ export function MeetingViewerClient({
                 </div>
               )}
 
-              {/* Export Feature (Temporarily commented out for future use) */}
-              {/* {!isReadOnly && (
+              {/* Export Feature */}
+              {!isReadOnly && (
                 <Button
                   onClick={() => setIsExportModalOpen(true)}
                   variant="outline"
                   size="sm"
-                  className="h-8 text-xs flex items-center gap-1.5 cursor-pointer bg-card px-2.5 border-border hover:border-primary/50 hover:bg-primary/5 transition-all text-foreground"
-                  title="Export Meeting (PDF, Notion, Subtitles, Markdown)"
+                  className="h-8 text-xs flex items-center gap-1.5 cursor-pointer bg-card px-2.5 rounded-lg border-border hover:border-primary/50 hover:bg-primary/5 transition-all text-foreground shadow-xs"
+                  title="Export Meeting Document (.doc, .txt, .md) for MoM & AI Analysis"
                 >
-                  <Download className="size-3.5 text-muted-foreground" />
-                  <span className="hidden sm:inline">Export</span>
+                  <Download className="size-3.5 text-primary" />
+                  <span className="hidden sm:inline font-semibold">Export</span>
                 </Button>
-              )} */}
+              )}
             </div>
           </div>
 
@@ -2448,16 +2448,17 @@ export function MeetingViewerClient({
         speakerName={clipperState.speakerName}
       />
 
-      {/* Export Modal (Temporarily commented out for future use) */}
-      {/* <MeetingExportModal
+      {/* Export Modal */}
+      <MeetingExportModal
         isOpen={isExportModalOpen}
         onClose={() => setIsExportModalOpen(false)}
         meeting={meeting}
         segments={segments}
         actionItems={actionItems}
         speakerMap={speakerMap}
+        chapters={chapters}
         workspaceName="Workspace"
-      /> */}
+      />
 
     </div>
   );

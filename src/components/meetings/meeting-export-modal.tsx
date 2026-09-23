@@ -1,18 +1,24 @@
 "use client";
 
-import React, { useState } from "react";
+import React, { useState, useEffect } from "react";
 import {
-  FileText, Download, Copy, Check, Share2, Printer,
-  Sparkles, FileCode, ExternalLink, ShieldCheck
+  FileText,
+  Download,
+  Sparkles,
+  Loader2,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
+import { Input } from "@/components/ui/input";
+import { Label } from "@/components/ui/label";
 import {
   Dialog,
   DialogContent,
   DialogHeader,
   DialogTitle,
   DialogDescription,
+  DialogFooter,
 } from "@/components/ui/dialog";
+import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { formatSecondsToTime, formatDurationHuman } from "@/lib/time-utils";
 
 interface Segment {
@@ -30,6 +36,13 @@ interface ActionItem {
   status: string;
 }
 
+interface Chapter {
+  startTime: number;
+  endTime: number;
+  title: string;
+  summary: string;
+}
+
 interface MeetingExportModalProps {
   isOpen: boolean;
   onClose: () => void;
@@ -44,25 +57,8 @@ interface MeetingExportModalProps {
   segments: Segment[];
   actionItems: ActionItem[];
   speakerMap: Record<string, string>;
+  chapters?: Chapter[];
   workspaceName?: string;
-}
-
-function formatSRTTime(seconds: number): string {
-  const hrs = Math.floor(seconds / 3600);
-  const mins = Math.floor((seconds % 3600) / 60);
-  const secs = Math.floor(seconds % 60);
-  const ms = Math.floor((seconds % 1) * 1000);
-
-  return `${hrs.toString().padStart(2, "0")}:${mins.toString().padStart(2, "0")}:${secs.toString().padStart(2, "0")},${ms.toString().padStart(3, "0")}`;
-}
-
-function formatVTTTime(seconds: number): string {
-  const hrs = Math.floor(seconds / 3600);
-  const mins = Math.floor((seconds % 3600) / 60);
-  const secs = Math.floor(seconds % 60);
-  const ms = Math.floor((seconds % 1) * 1000);
-
-  return `${hrs.toString().padStart(2, "0")}:${mins.toString().padStart(2, "0")}:${secs.toString().padStart(2, "0")}.${ms.toString().padStart(3, "0")}`;
 }
 
 function escapeHtml(str: string): string {
@@ -77,12 +73,19 @@ function escapeHtml(str: string): string {
 
 function formatInline(text: string): string {
   return text
-    .replace(/\*\*(.*?)\*\*/g, '<strong>$1</strong>')
-    .replace(/\*(.*?)\*/g, '<em>$1</em>')
-    .replace(/`([^`]+)`/g, '<code style="background:#f1f5f9; border:1px solid #e2e8f0; padding:1px 5px; border-radius:3px; font-size:11px; font-family:monospace;">$1</code>');
+    .replace(/\*\*(.*?)\*\*/g, "<strong>$1</strong>")
+    .replace(/\*(.*?)\*/g, "<em>$1</em>")
+    .replace(
+      /`([^`]+)`/g,
+      '<code style="background:#f1f5f9; border:1px solid #e2e8f0; padding:1px 5px; border-radius:3px; font-size:11px; font-family:monospace;">$1</code>'
+    );
 }
 
-function renderCleanExecutiveSummaryHtml(rawSummary: string | null, title: string, segmentCount: number): string {
+function renderCleanSummaryHtml(
+  rawSummary: string | null,
+  title: string,
+  segmentCount: number
+): string {
   if (
     !rawSummary ||
     rawSummary.includes("disabled or key is missing") ||
@@ -90,12 +93,10 @@ function renderCleanExecutiveSummaryHtml(rawSummary: string | null, title: strin
     rawSummary.trim().length === 0
   ) {
     return `
-      <div class="report-section">
-        <div class="section-header">
-          <h2 class="section-title">Executive Summary</h2>
-        </div>
-        <p class="section-desc">
-          Executive briefing for <strong>${escapeHtml(title)}</strong>. Discussions comprised ${segmentCount} transcript segments detailing operational alignment, key deliverables, and team decisions.
+      <div style="margin-bottom: 16px;">
+        <h3 style="color: #0f172a; font-size: 13pt; margin-bottom: 6px;">Executive Briefing</h3>
+        <p style="color: #475569; font-size: 11pt; line-height: 1.6;">
+          Discussion recorded for <strong>${escapeHtml(title)}</strong> covering ${segmentCount} transcript segments detailing key project decisions, team alignment, and operational next steps.
         </p>
       </div>
     `;
@@ -103,113 +104,55 @@ function renderCleanExecutiveSummaryHtml(rawSummary: string | null, title: strin
 
   const lines = rawSummary.split("\n");
   let html = "";
-  let inKeyPoints = false;
-  let inDecisions = false;
-  let currentParagraph = "";
+  let inList = false;
 
-  const flushParagraph = () => {
-    if (currentParagraph.trim()) {
-      html += `<p class="section-desc">${formatInline(currentParagraph.trim())}</p>`;
-      currentParagraph = "";
-    }
-  };
-
-  const closeOpenBlocks = () => {
-    flushParagraph();
-    if (inKeyPoints) {
-      html += `</div></div>`;
-      inKeyPoints = false;
-    }
-    if (inDecisions) {
-      html += `</div></div>`;
-      inDecisions = false;
-    }
-  };
-
-  for (let i = 0; i < lines.length; i++) {
-    const rawLine = lines[i];
-    const line = rawLine.trim();
-
-    if (!line) {
-      flushParagraph();
-      continue;
-    }
-
-    // Heading match (# Heading, ## Heading, ### Heading)
-    const headingMatch = line.match(/^#{1,4}\s+(.*)$/);
-    if (headingMatch) {
-      closeOpenBlocks();
-      const headingText = headingMatch[1].trim();
-      const lower = headingText.toLowerCase();
-
-      if (lower.includes("decision")) {
-        html += `
-          <div class="decisions-card">
-            <div class="decisions-card-title">
-              <span class="decision-icon">✓</span> Decisions & Key Outcomes
-            </div>
-            <div class="decisions-list">
-        `;
-        inDecisions = true;
-      } else if (lower.includes("key point") || lower.includes("discussion") || lower.includes("topics") || lower.includes("takeaway")) {
-        html += `
-          <div class="report-section">
-            <div class="section-header">
-              <h2 class="section-title">${escapeHtml(headingText)}</h2>
-            </div>
-            <div class="key-point-list">
-        `;
-        inKeyPoints = true;
-      } else {
-        html += `
-          <div class="report-section">
-            <div class="section-header">
-              <h2 class="section-title">${escapeHtml(headingText)}</h2>
-            </div>
-        `;
+  for (const line of lines) {
+    const trimmed = line.trim();
+    if (!trimmed) {
+      if (inList) {
+        html += "</ul>\n";
+        inList = false;
       }
       continue;
     }
 
-    // Bullet items: "- **Title:** Description" or "- Item"
-    if (line.startsWith("- ") || line.startsWith("* ")) {
-      flushParagraph();
-      const content = line.substring(2).trim();
-
-      if (inDecisions) {
-        html += `
-          <div class="decision-item">
-            <span class="decision-check">✓</span>
-            <div class="decision-text">${formatInline(content)}</div>
-          </div>
-        `;
-      } else if (inKeyPoints) {
-        html += `
-          <div class="key-point-item">
-            <span class="point-bullet"></span>
-            <div class="point-body">${formatInline(content)}</div>
-          </div>
-        `;
-      } else {
-        html += `
-          <div class="key-point-item">
-            <span class="point-bullet"></span>
-            <div class="point-body">${formatInline(content)}</div>
-          </div>
-        `;
+    if (trimmed.startsWith("### ")) {
+      if (inList) {
+        html += "</ul>\n";
+        inList = false;
       }
-      continue;
-    }
-
-    // Regular paragraph line
-    if (currentParagraph) {
-      currentParagraph += " " + line;
+      html += `<h4 class="pdf-slice-item" style="color:#1e293b; font-size:12pt; margin:16px 0 6px 0; font-weight:600; font-family:'Poppins',sans-serif;">${escapeHtml(trimmed.slice(4))}</h4>\n`;
+    } else if (trimmed.startsWith("## ")) {
+      if (inList) {
+        html += "</ul>\n";
+        inList = false;
+      }
+      html += `<h3 class="pdf-slice-item" style="color:#0f172a; font-size:13pt; margin:20px 0 8px 0; font-weight:600; font-family:'Poppins',sans-serif; border-bottom:1px solid #e2e8f0; padding-bottom:4px;">${escapeHtml(trimmed.slice(3))}</h3>\n`;
+    } else if (trimmed.startsWith("# ")) {
+      if (inList) {
+        html += "</ul>\n";
+        inList = false;
+      }
+      html += `<h2 class="pdf-slice-item" style="color:#0f172a; font-size:14pt; margin:22px 0 10px 0; font-weight:700; font-family:'Poppins',sans-serif;">${escapeHtml(trimmed.slice(2))}</h2>\n`;
+    } else if (trimmed.startsWith("- ") || trimmed.startsWith("* ")) {
+      if (!inList) {
+        html += '<ul style="margin: 8px 0 12px 24px; padding:0; color:#334155; line-height:1.6; font-family:\'Poppins\',sans-serif;">\n';
+        inList = true;
+      }
+      html += `<li class="pdf-slice-item" style="margin-bottom: 6px; font-family:'Poppins',sans-serif;">${formatInline(escapeHtml(trimmed.slice(2)))}</li>\n`;
     } else {
-      currentParagraph = line;
+      if (inList) {
+        html += "</ul>\n";
+        inList = false;
+      }
+      html += `<p class="pdf-slice-item" style="margin: 8px 0; color:#334155; line-height:1.6; font-size:10.5pt; font-family:'Poppins',sans-serif;">${formatInline(escapeHtml(trimmed))}</p>\n`;
     }
   }
 
-  closeOpenBlocks();
+  if (inList) {
+    html += "</ul>\n";
+  }
+
   return html;
 }
 
@@ -220,730 +163,594 @@ export function MeetingExportModal({
   segments,
   actionItems,
   speakerMap,
+  chapters = [],
   workspaceName = "Workspace",
 }: MeetingExportModalProps) {
-  const [copiedNotion, setCopiedNotion] = useState(false);
+  const [fileName, setFileName] = useState("");
+  const [selectedFormat, setSelectedFormat] = useState<"doc" | "pdf" | "md">("doc");
+  const [isGenerating, setIsGenerating] = useState(false);
 
-  const handleDownloadSRT = () => {
-    let srtContent = "";
-    segments.forEach((seg, index) => {
-      const speaker = speakerMap[seg.speakerId] || seg.speakerId;
-      const start = formatSRTTime(seg.startTime);
-      const end = formatSRTTime(seg.endTime);
-      srtContent += `${index + 1}\n${start} --> ${end}\n[${speaker}]: ${seg.text}\n\n`;
-    });
+  // Pre-load Poppins font for modern PDF rendering
+  useEffect(() => {
+    if (!document.getElementById("google-font-poppins")) {
+      const link = document.createElement("link");
+      link.id = "google-font-poppins";
+      link.rel = "stylesheet";
+      link.href =
+        "https://fonts.googleapis.com/css2?family=Poppins:wght@300;400;500;600;700&display=swap";
+      document.head.appendChild(link);
+    }
+  }, []);
 
-    const blob = new Blob([srtContent], { type: "text/plain;charset=utf-8" });
-    const url = URL.createObjectURL(blob);
-    const link = document.createElement("a");
-    link.href = url;
-    link.download = `${meeting.title.replace(/[^a-z0-9]/gi, "_")}_subtitles.srt`;
-    link.click();
-    URL.revokeObjectURL(url);
+  // Initialize prefilled clean filename when modal opens
+  useEffect(() => {
+    if (isOpen) {
+      const cleanTitle = (meeting.title || "Meeting")
+        .replace(/[\\/:*?"<>|]/g, "")
+        .trim();
+      setFileName(`${cleanTitle} - MoM & Transcript`);
+    }
+  }, [isOpen, meeting.title]);
+
+  const uniqueSpeakers = Array.from(
+    new Set(segments.map((s) => speakerMap[s.speakerId] || s.speakerId))
+  );
+
+  const formattedDate = new Date(meeting.createdAt || new Date()).toLocaleDateString("en-US", {
+    weekday: "long",
+    year: "numeric",
+    month: "long",
+    day: "numeric",
+  });
+
+  const durationStr = formatDurationHuman(meeting.durationSeconds);
+  const isLong = meeting.durationSeconds >= 3600;
+
+  // Build Word Document HTML
+  const buildWordDocument = (): string => {
+    // 1. Spoken Transcript
+    const transcriptHtml = segments
+      .map((seg) => {
+        const speaker = escapeHtml(speakerMap[seg.speakerId] || seg.speakerId);
+        const timeStr = formatSecondsToTime(seg.startTime, isLong);
+        const text = escapeHtml(seg.text);
+
+        return `
+          <div style="margin-bottom: 12px; line-height: 1.6; font-size: 10pt; font-family: 'Poppins', sans-serif;">
+            <span style="color: #64748b; font-family: 'Poppins', sans-serif; font-variant-numeric: tabular-nums; font-size: 9pt; font-weight: 500; margin-right: 8px;">[${timeStr}]</span>
+            <strong style="color: #0f172a; margin-right: 6px; font-weight: 600; font-family: 'Poppins', sans-serif;">${speaker}:</strong>
+            <span style="color: #334155; font-family: 'Poppins', sans-serif; font-weight: 400;">${text}</span>
+          </div>
+        `;
+      })
+      .join("\n");
+
+    // 2. Executive Summary (At the end)
+    const summaryHtml = renderCleanSummaryHtml(
+      meeting.summaryMarkdown,
+      meeting.title,
+      segments.length
+    );
+
+    return `
+      <html xmlns:o='urn:schemas-microsoft-com:office:office' xmlns:w='urn:schemas-microsoft-com:office:word' xmlns='http://www.w3.org/TR/REC-html40'>
+      <head>
+        <meta charset="utf-8">
+        <title>${escapeHtml(meeting.title)} - Transcript & Summary</title>
+        <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Poppins:wght@300;400;500;600;700&display=swap">
+        <!--[if gte mso 9]>
+        <xml>
+          <w:WordDocument>
+            <w:View>Print</w:View>
+            <w:Zoom>100</w:Zoom>
+            <w:DoNotOptimizeForBrowser/>
+          </w:WordDocument>
+        </xml>
+        <![endif]-->
+        <style>
+          @page {
+            size: A4;
+            margin: 1.0in 1.0in 1.0in 1.0in;
+            mso-header-margin: 0.5in;
+            mso-footer-margin: 0.5in;
+          }
+          body {
+            font-family: 'Poppins', 'Segoe UI', Arial, sans-serif;
+            color: #0f172a;
+            line-height: 1.6;
+            margin: 0;
+            padding: 0;
+          }
+          h1, h2, h3, h4 {
+            font-family: 'Poppins', 'Segoe UI', Arial, sans-serif;
+          }
+          .header-card {
+            background-color: #f8fafc;
+            border: 1px solid #cbd5e1;
+            border-left: 6px solid #2563eb;
+            padding: 16px 20px;
+            margin-bottom: 24px;
+            border-radius: 6px;
+            font-family: 'Poppins', sans-serif;
+          }
+        </style>
+      </head>
+      <body>
+        <!-- HEADER / METADATA SECTION -->
+        <div class="header-card">
+          <h1 style="margin: 0 0 6px 0; color: #0f172a; font-size: 18pt; font-weight: 700; line-height: 1.3; font-family: 'Poppins', sans-serif;">
+            ${escapeHtml(meeting.title)}
+          </h1>
+          <p style="margin: 0 0 10px 0; color: #64748b; font-size: 10pt; font-family: 'Poppins', sans-serif;">
+            Official Meeting Transcript & Summary
+          </p>
+          <table style="width: 100%; border-collapse: collapse; font-size: 9.5pt; color: #334155; font-family: 'Poppins', sans-serif;">
+            <tr>
+              <td style="padding: 3px 0; width: 50%;"><strong>Date:</strong> ${formattedDate}</td>
+              <td style="padding: 3px 0; width: 50%;"><strong>Duration:</strong> ${durationStr}</td>
+            </tr>
+          </table>
+        </div>
+
+        <!-- SECTION 1: FULL SPOKEN TRANSCRIPT WITH TIMESTAMPS -->
+        <div style="margin-bottom: 30px;">
+          <h2 style="color: #0f172a; font-size: 13pt; font-weight: 600; font-family: 'Poppins', sans-serif; border-bottom: 2px solid #0f172a; padding-bottom: 5px; margin-bottom: 14px;">
+            1. Complete Spoken Transcript
+          </h2>
+          <div style="margin-top: 10px;">
+            ${transcriptHtml}
+          </div>
+        </div>
+
+        <!-- PAGE BREAK BEFORE SUMMARY -->
+        <br clear="all" style="page-break-before: always; mso-special-character: line-break;" />
+
+        <!-- SECTION 2: EXECUTIVE SUMMARY (AT THE VERY END) -->
+        <div style="margin-top: 24px;">
+          <h2 style="color: #0f172a; font-size: 13pt; font-weight: 600; font-family: 'Poppins', sans-serif; border-bottom: 2px solid #0f172a; padding-bottom: 5px; margin-bottom: 14px;">
+            2. Meeting Summary
+          </h2>
+          <div style="font-size: 10.5pt; line-height: 1.6; color: #1e293b; font-family: 'Poppins', sans-serif;">
+            ${summaryHtml}
+          </div>
+        </div>
+      </body>
+      </html>
+    `;
   };
 
-  const handleDownloadVTT = () => {
-    let vttContent = "WEBVTT - MeetLog AI Transcript Subtitles\n\n";
-    segments.forEach((seg, index) => {
-      const speaker = speakerMap[seg.speakerId] || seg.speakerId;
-      const start = formatVTTTime(seg.startTime);
-      const end = formatVTTTime(seg.endTime);
-      vttContent += `${index + 1}\n${start} --> ${end}\n<v ${speaker}>${seg.text}\n\n`;
-    });
+  // Build Markdown (.md)
+  const buildMarkdown = (): string => {
+    let md = `# ${meeting.title}\n\n`;
+    md += `_Official Meeting Transcript & Summary_\n\n`;
+    md += `> **Date:** ${formattedDate}  \n`;
+    md += `> **Duration:** ${durationStr}  \n\n`;
 
-    const blob = new Blob([vttContent], { type: "text/vtt;charset=utf-8" });
-    const url = URL.createObjectURL(blob);
-    const link = document.createElement("a");
-    link.href = url;
-    link.download = `${meeting.title.replace(/[^a-z0-9]/gi, "_")}_subtitles.vtt`;
-    link.click();
-    URL.revokeObjectURL(url);
-  };
+    md += `---\n\n`;
+    md += `## 1. Complete Spoken Transcript\n\n`;
 
-  const handleCopyNotionMarkdown = () => {
-    const formattedDate = new Date(meeting.createdAt || new Date()).toLocaleDateString("en-US", {
-      year: "numeric",
-      month: "short",
-      day: "numeric",
-    });
-
-    let markdown = `# ${meeting.title}\n\n`;
-    markdown += `**Workspace:** ${workspaceName}  \n`;
-    markdown += `**Date:** ${formattedDate}  \n`;
-    markdown += `**Duration:** ${Math.round(meeting.durationSeconds / 60)} mins  \n\n`;
-
-    if (meeting.summaryMarkdown && !meeting.summaryMarkdown.includes("disabled or key is missing")) {
-      markdown += `## 📌 Executive Summary\n${meeting.summaryMarkdown}\n\n`;
-    }
-
-    if (actionItems.length > 0) {
-      markdown += `## ✅ Action Items\n`;
-      actionItems.forEach((item) => {
-        const checkbox = item.status === "COMPLETED" ? "[x]" : "[ ]";
-        const assignee = item.assigneeName ? ` (@${item.assigneeName})` : "";
-        markdown += `- ${checkbox} ${item.taskDescription}${assignee}\n`;
-      });
-      markdown += `\n`;
-    }
-
-    markdown += `## 🎙️ Meeting Transcript Excerpts\n`;
     segments.forEach((seg) => {
       const speaker = speakerMap[seg.speakerId] || seg.speakerId;
-      const timeStr = formatSecondsToTime(seg.startTime);
-      markdown += `**[${timeStr}] ${speaker}:** ${seg.text}\n\n`;
+      const timeStr = formatSecondsToTime(seg.startTime, isLong);
+      md += `[${timeStr}] **${speaker}:** ${seg.text}\n\n`;
     });
 
-    navigator.clipboard.writeText(markdown);
-    setCopiedNotion(true);
-    setTimeout(() => setCopiedNotion(false), 2000);
+    md += `---\n\n`;
+    md += `## 2. Meeting Summary\n\n`;
+    md += `${meeting.summaryMarkdown || "No executive summary available."}\n`;
+
+    return md;
   };
 
-  const handlePrintPDF = () => {
-    const formattedDate = new Date(meeting.createdAt || new Date()).toLocaleDateString("en-US", {
-      year: "numeric",
-      month: "short",
-      day: "numeric",
-    });
+  const buildPdfDocumentHtml = (): string => {
+    const transcriptHtml = segments
+      .map((seg) => {
+        const speaker = escapeHtml(speakerMap[seg.speakerId] || seg.speakerId);
+        const timeStr = formatSecondsToTime(seg.startTime, isLong);
+        const text = escapeHtml(seg.text);
 
-    const printWin = window.open("", "_blank");
-    if (!printWin) return;
+        return `
+          <div class="pdf-slice-item" style="margin-bottom: 12px; line-height: 1.6; font-size: 10pt; font-family: 'Poppins', sans-serif;">
+            <span style="color: #64748b; font-family: 'Poppins', sans-serif; font-variant-numeric: tabular-nums; font-size: 9pt; font-weight: 500; margin-right: 8px;">[${timeStr}]</span>
+            <strong style="color: #0f172a; margin-right: 6px; font-weight: 600; font-family: 'Poppins', sans-serif;">${speaker}:</strong>
+            <span style="color: #334155; font-family: 'Poppins', sans-serif; font-weight: 400;">${text}</span>
+          </div>
+        `;
+      })
+      .join("\n");
 
-    let actionsHtml = "";
-    if (actionItems.length > 0) {
-      actionsHtml = `
-        <div class="report-section">
-          <div class="section-header">
-            <h2 class="section-title">Action Items & Deliverables</h2>
-            <span class="section-counter">${actionItems.filter(a => a.status === "COMPLETED").length}/${actionItems.length} Completed</span>
-          </div>
-          <div class="action-items-list">
-            ${actionItems
-              .map((a) => {
-                const isDone = a.status === "COMPLETED";
-                return `
-                  <div class="action-card ${isDone ? "completed" : ""}">
-                    <div class="action-main">
-                      <div class="action-box ${isDone ? "completed" : ""}">
-                        ${isDone ? `<svg width="10" height="8" viewBox="0 0 10 8" fill="none"><path d="M1 4L3.5 6.5L9 1" stroke="#ffffff" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg>` : ""}
-                      </div>
-                      <span class="action-desc ${isDone ? "completed" : ""}">${escapeHtml(a.taskDescription)}</span>
-                    </div>
-                    <div class="action-badges">
-                      ${a.assigneeName ? `<span class="assignee-badge">👤 ${escapeHtml(a.assigneeName)}</span>` : ""}
-                      <span class="status-badge ${isDone ? "status-completed" : "status-pending"}">${isDone ? "Completed" : "Pending"}</span>
-                    </div>
-                  </div>
-                `;
-              })
-              .join("")}
-          </div>
+    const summaryHtml = renderCleanSummaryHtml(
+      meeting.summaryMarkdown,
+      meeting.title,
+      segments.length
+    );
+
+    return `
+      <div style="font-family: 'Poppins', sans-serif; color: #0f172a; line-height: 1.6; background-color: #ffffff; padding: 4px 6px;">
+        <!-- HEADER CARD -->
+        <div class="pdf-slice-item" style="background-color: #f8fafc; border: 1px solid #cbd5e1; border-left: 5px solid #2563eb; padding: 16px 20px; margin-bottom: 20px; border-radius: 6px; font-family: 'Poppins', sans-serif;">
+          <h1 style="margin: 0 0 6px 0; color: #0f172a; font-size: 18pt; font-weight: 700; line-height: 1.3; font-family: 'Poppins', sans-serif;">
+            ${escapeHtml(meeting.title)}
+          </h1>
+          <p style="margin: 0 0 10px 0; color: #64748b; font-size: 10pt; font-family: 'Poppins', sans-serif; font-weight: 400;">
+            Official Meeting Transcript & Summary
+          </p>
+          <table style="width: 100%; border-collapse: collapse; font-size: 9.5pt; color: #334155; font-family: 'Poppins', sans-serif;">
+            <tr>
+              <td style="padding: 2px 0; width: 50%;"><strong>Date:</strong> ${formattedDate}</td>
+              <td style="padding: 2px 0; width: 50%;"><strong>Duration:</strong> ${durationStr}</td>
+            </tr>
+          </table>
         </div>
-      `;
-    }
 
-    let transcriptHtml = "";
-    if (segments.length > 0) {
-      transcriptHtml = `
-        <div class="report-section">
-          <div class="section-header">
-            <h2 class="section-title">Transcript Key Excerpts</h2>
-            <span class="section-counter">${Math.min(segments.length, 35)} of ${segments.length} segments</span>
-          </div>
-          <div class="transcript-list">
-            ${segments
-              .slice(0, 35)
-              .map((seg) => {
-                const speaker = speakerMap[seg.speakerId] || seg.speakerId;
-                const timeStr = formatSecondsToTime(seg.startTime);
-                return `
-                  <div class="transcript-row">
-                    <div class="transcript-meta">
-                      <span class="timestamp-tag">${timeStr}</span>
-                      <span class="speaker-label">${escapeHtml(speaker)}</span>
-                    </div>
-                    <div class="transcript-text">${escapeHtml(seg.text)}</div>
-                  </div>
-                `;
-              })
-              .join("")}
-          </div>
+        <!-- SECTION 1: FULL SPOKEN TRANSCRIPT -->
+        <div class="pdf-slice-item" style="margin-bottom: 16px;">
+          <h2 style="color: #0f172a; font-size: 13pt; font-weight: 600; font-family: 'Poppins', sans-serif; border-bottom: 2px solid #0f172a; padding-bottom: 5px; margin-bottom: 14px;">
+            1. Complete Spoken Transcript
+          </h2>
         </div>
-      `;
+        <div>
+          ${transcriptHtml}
+        </div>
+
+        <!-- SECTION 2: EXECUTIVE SUMMARY (FORCED BREAK) -->
+        <div class="pdf-slice-item" data-break="true" style="margin-top: 24px; padding-top: 10px;">
+          <h2 style="color: #0f172a; font-size: 13pt; font-weight: 600; font-family: 'Poppins', sans-serif; border-bottom: 2px solid #0f172a; padding-bottom: 5px; margin-bottom: 14px;">
+            2. Meeting Summary
+          </h2>
+        </div>
+        <div>
+          ${summaryHtml}
+        </div>
+      </div>
+    `;
+  };
+
+  const isFileNameEmpty = !fileName.trim();
+
+  const handleDownload = async () => {
+    const trimmedName = fileName.trim();
+    if (!trimmedName || isGenerating) {
+      return;
     }
+    const sanitizedName = trimmedName.replace(/[\\/:*?"<>|]/g, "_");
 
-    const summaryHtml = renderCleanExecutiveSummaryHtml(meeting.summaryMarkdown, meeting.title, segments.length);
+    if (selectedFormat === "pdf") {
+      setIsGenerating(true);
+      try {
+        const html2canvas = (await import("html2canvas")).default;
+        const { jsPDF } = await import("jspdf");
 
-    printWin.document.write(`
-      <!DOCTYPE html>
-      <html lang="en">
-        <head>
-          <meta charset="UTF-8">
-          <title> </title>
-          <style>
-            @page {
-              size: A4 portrait;
-              margin-top: 0mm;
-              margin-bottom: 14mm;
-              margin-left: 16mm;
-              margin-right: 16mm;
-              @top-left { content: none !important; }
-              @top-center { content: none !important; }
-              @top-right { content: none !important; }
-              @bottom-left { content: none !important; }
-              @bottom-right { content: none !important; }
-              @bottom-center {
-                content: "Page " counter(page) " of " counter(pages);
-                font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
-                font-size: 8.5pt;
-                color: #94a3b8;
+        // Ensure Poppins font is loaded before rendering canvas
+        try {
+          await document.fonts.load("400 12pt Poppins");
+          await document.fonts.load("500 12pt Poppins");
+          await document.fonts.load("600 12pt Poppins");
+          await document.fonts.load("700 16pt Poppins");
+          await document.fonts.ready;
+        } catch {}
+
+        const printDocHtml = buildPdfDocumentHtml();
+
+        // 1. Create temporary container
+        const container = document.createElement("div");
+        container.id = "pdf-direct-export";
+        container.style.position = "fixed";
+        container.style.left = "0px";
+        container.style.top = "0px";
+        container.style.width = "780px";
+        container.style.zIndex = "-1000";
+        container.style.backgroundColor = "#ffffff";
+        container.style.color = "#0f172a";
+        container.style.pointerEvents = "none";
+        container.innerHTML = printDocHtml;
+        document.body.appendChild(container);
+
+        // Measure true item boundaries using getBoundingClientRect relative to container
+        const containerRect = container.getBoundingClientRect();
+        const itemNodes = Array.from(container.querySelectorAll(".pdf-slice-item")) as HTMLElement[];
+        const items = itemNodes.map((el) => {
+          const rect = el.getBoundingClientRect();
+          const top = Math.round((rect.top - containerRect.top) * 2);
+          const bottom = Math.round((rect.bottom - containerRect.top) * 2);
+          const isForcedBreak = el.getAttribute("data-break") === "true";
+          return { top, bottom, isForcedBreak };
+        });
+
+        // 2. Render to high-resolution canvas
+        const canvas = await html2canvas(container, {
+          scale: 2,
+          useCORS: true,
+          logging: false,
+          backgroundColor: "#ffffff",
+          onclone: (clonedDoc: Document) => {
+            // Strip external stylesheets with modern "lab()" colors while preserving Poppins font
+            const styles = clonedDoc.querySelectorAll("style, link[rel='stylesheet']");
+            styles.forEach((el) => {
+              if (el.id === "google-font-poppins") return;
+              const href = el.getAttribute("href") || "";
+              if (href.includes("fonts.googleapis.com") || href.includes("fonts.gstatic.com")) return;
+              el.remove();
+            });
+
+            clonedDoc.documentElement.style.backgroundColor = "#ffffff";
+            clonedDoc.documentElement.style.color = "#0f172a";
+            clonedDoc.body.style.backgroundColor = "#ffffff";
+            clonedDoc.body.style.color = "#0f172a";
+
+            const target = clonedDoc.getElementById("pdf-direct-export");
+            if (target) {
+              target.style.position = "static";
+              target.style.zIndex = "1";
+              target.style.visibility = "visible";
+              target.style.opacity = "1";
+            }
+          },
+        });
+
+        document.body.removeChild(container);
+
+        // 3. Slice canvas into A4 pages cleanly avoiding cutting text in half
+        const pdf = new jsPDF({
+          orientation: "portrait",
+          unit: "mm",
+          format: "a4",
+        });
+
+        const pageWidth = 210;
+        const pageHeight = 297;
+        const margin = 16; // 16mm margins on all 4 sides
+        const contentWidth = pageWidth - margin * 2; // 178mm
+        const maxContentHeight = pageHeight - margin * 2; // 265mm
+
+        const canvasWidth = canvas.width;
+        const canvasHeight = canvas.height;
+        const pxPerMm = canvasWidth / contentWidth;
+        const maxPageHeightPx = maxContentHeight * pxPerMm;
+
+        let renderedHeightPx = 0;
+        let pageIndex = 0;
+
+        while (renderedHeightPx < canvasHeight) {
+          if (pageIndex > 0) {
+            pdf.addPage();
+          }
+
+          let targetEndPx = renderedHeightPx + maxPageHeightPx;
+
+          if (targetEndPx < canvasHeight) {
+            // Check if any forced break exists on this page
+            const forcedItem = items.find(
+              (it) => it.isForcedBreak && it.top > renderedHeightPx + 40 && it.top <= targetEndPx
+            );
+            if (forcedItem) {
+              targetEndPx = forcedItem.top;
+            } else {
+              // Find all items that cross targetEndPx on this page
+              const straddled = items.filter(
+                (it) => it.top >= renderedHeightPx && it.top < targetEndPx && it.bottom > targetEndPx
+              );
+              if (straddled.length > 0) {
+                // Pick the earliest straddled item
+                straddled.sort((a, b) => a.top - b.top);
+                // Snap cleanly above it with a 6px buffer
+                targetEndPx = Math.max(renderedHeightPx + 60, straddled[0].top - 6);
               }
             }
+          } else {
+            targetEndPx = canvasHeight;
+          }
 
-            * {
-              box-sizing: border-box;
-              -webkit-print-color-adjust: exact !important;
-              print-color-adjust: exact !important;
+          const sliceHeightPx = targetEndPx - renderedHeightPx;
+
+          if (sliceHeightPx > 0) {
+            const pageCanvas = document.createElement("canvas");
+            pageCanvas.width = canvasWidth;
+            pageCanvas.height = sliceHeightPx;
+            const pageCtx = pageCanvas.getContext("2d");
+
+            if (pageCtx) {
+              pageCtx.fillStyle = "#ffffff";
+              pageCtx.fillRect(0, 0, canvasWidth, sliceHeightPx);
+              pageCtx.drawImage(
+                canvas,
+                0,
+                renderedHeightPx,
+                canvasWidth,
+                sliceHeightPx,
+                0,
+                0,
+                canvasWidth,
+                sliceHeightPx
+              );
+
+              const sliceImgData = pageCanvas.toDataURL("image/jpeg", 0.95);
+              const sliceHeightMm = sliceHeightPx / pxPerMm;
+
+              pdf.addImage(sliceImgData, "JPEG", margin, margin, contentWidth, sliceHeightMm);
             }
+          }
 
-            body {
-              font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
-              color: #0f172a;
-              background: #ffffff;
-              margin: 0;
-              padding: 14mm 0 10mm 0;
-              line-height: 1.6;
-              font-size: 13px;
-              -webkit-font-smoothing: antialiased;
-            }
+          renderedHeightPx = targetEndPx;
+          pageIndex++;
+        }
 
-            /* Branding Bar */
-            .report-brand-bar {
-              display: flex;
-              align-items: center;
-              justify-content: space-between;
-              border-bottom: 1px solid #e2e8f0;
-              padding-bottom: 12px;
-              margin-bottom: 16px;
-            }
+        // 4. Directly trigger download of the PDF file!
+        pdf.save(`${sanitizedName}.pdf`);
+        onClose();
+      } catch (err) {
+        console.error("PDF export error:", err);
+      } finally {
+        setIsGenerating(false);
+      }
+      return;
+    }
 
-            .brand-group {
-              display: flex;
-              align-items: center;
-              gap: 8px;
-            }
+    let content = "";
+    let mimeType = "";
+    let extension = selectedFormat;
 
-            .brand-logo-icon {
-              width: 22px;
-              height: 22px;
-              border-radius: 6px;
-              background: linear-gradient(135deg, #2563eb, #4f46e5);
-              color: #ffffff;
-              display: flex;
-              align-items: center;
-              justify-content: center;
-              font-size: 11px;
-              font-weight: 800;
-              letter-spacing: -0.5px;
-            }
+    if (selectedFormat === "doc") {
+      content = buildWordDocument();
+      mimeType = "application/msword;charset=utf-8";
+    } else {
+      content = buildMarkdown();
+      mimeType = "text/markdown;charset=utf-8";
+    }
 
-            .brand-name {
-              font-size: 13px;
-              font-weight: 800;
-              letter-spacing: -0.2px;
-              color: #0f172a;
-            }
+    const blob = new Blob([content], { type: mimeType });
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement("a");
+    link.href = url;
+    link.download = `${sanitizedName}.${extension}`;
+    link.style.display = "none";
+    // Stop event propagation so Next.js client router doesn't intercept the click as a page navigation
+    link.addEventListener("click", (e) => {
+      e.stopPropagation();
+    });
+    document.body.appendChild(link);
+    link.click();
 
-            .brand-divider {
-              color: #cbd5e1;
-              font-weight: 300;
-            }
+    // Defer removal and object URL revocation so browser starts download stream without aborting or reloading
+    setTimeout(() => {
+      if (document.body.contains(link)) {
+        document.body.removeChild(link);
+      }
+      URL.revokeObjectURL(url);
+    }, 1500);
 
-            .brand-tag {
-              font-size: 10.5px;
-              font-weight: 600;
-              color: #64748b;
-              letter-spacing: 0.3px;
-              text-transform: uppercase;
-            }
-
-            .confidential-pill {
-              font-size: 9.5px;
-              font-weight: 700;
-              letter-spacing: 0.5px;
-              text-transform: uppercase;
-              color: #475569;
-              background: #f1f5f9;
-              border: 1px solid #e2e8f0;
-              padding: 3px 8px;
-              border-radius: 9999px;
-            }
-
-            /* Title & Context Grid */
-            .report-title-block {
-              margin-bottom: 22px;
-            }
-
-            .report-title {
-              font-size: 24px;
-              font-weight: 800;
-              color: #0f172a;
-              letter-spacing: -0.5px;
-              line-height: 1.25;
-              margin: 0 0 12px 0;
-            }
-
-            .report-meta-grid {
-              display: flex;
-              flex-wrap: wrap;
-              gap: 8px 16px;
-              font-size: 11.5px;
-              color: #64748b;
-              background: #f8fafc;
-              border: 1px solid #f1f5f9;
-              border-radius: 8px;
-              padding: 8px 12px;
-            }
-
-            .meta-item {
-              display: flex;
-              align-items: center;
-              gap: 5px;
-            }
-
-            .meta-item strong {
-              color: #334155;
-              font-weight: 600;
-            }
-
-            /* Section Styling */
-            .report-section {
-              margin-bottom: 22px;
-              page-break-inside: avoid;
-              break-inside: avoid;
-            }
-
-            .section-header {
-              display: flex;
-              align-items: center;
-              justify-content: space-between;
-              border-bottom: 1.5px solid #0f172a;
-              padding-bottom: 6px;
-              margin-bottom: 12px;
-            }
-
-            .section-title {
-              font-size: 13.5px;
-              font-weight: 800;
-              letter-spacing: 0.4px;
-              text-transform: uppercase;
-              color: #0f172a;
-              margin: 0;
-            }
-
-            .section-counter {
-              font-size: 11px;
-              font-weight: 600;
-              color: #64748b;
-            }
-
-            .section-desc {
-              font-size: 13px;
-              color: #334155;
-              line-height: 1.65;
-              margin: 0 0 10px 0;
-            }
-
-            /* Key Points */
-            .key-point-list {
-              display: flex;
-              flex-direction: column;
-              gap: 8px;
-              margin: 10px 0;
-            }
-
-            .key-point-item {
-              display: flex;
-              align-items: flex-start;
-              gap: 10px;
-              font-size: 12.5px;
-              line-height: 1.55;
-              color: #334155;
-              background: #ffffff;
-              border: 1px solid #f1f5f9;
-              border-left: 3px solid #3b82f6;
-              border-radius: 0 6px 6px 0;
-              padding: 8px 12px;
-              page-break-inside: avoid;
-              break-inside: avoid;
-            }
-
-            .point-bullet {
-              width: 5px;
-              height: 5px;
-              border-radius: 50%;
-              background: #3b82f6;
-              margin-top: 7px;
-              shrink: 0;
-            }
-
-            .point-body strong {
-              color: #0f172a;
-              font-weight: 700;
-            }
-
-            /* Decisions Block */
-            .decisions-card {
-              background: #f0fdf4;
-              border: 1px solid #bbf7d0;
-              border-left: 4px solid #10b981;
-              border-radius: 8px;
-              padding: 12px 14px;
-              margin: 14px 0;
-              page-break-inside: avoid;
-              break-inside: avoid;
-            }
-
-            .decisions-card-title {
-              font-size: 12px;
-              font-weight: 800;
-              text-transform: uppercase;
-              letter-spacing: 0.5px;
-              color: #15803d;
-              margin: 0 0 8px 0;
-              display: flex;
-              align-items: center;
-              gap: 6px;
-            }
-
-            .decision-icon {
-              font-weight: bold;
-              font-size: 14px;
-            }
-
-            .decisions-list {
-              display: flex;
-              flex-direction: column;
-              gap: 6px;
-            }
-
-            .decision-item {
-              display: flex;
-              align-items: flex-start;
-              gap: 8px;
-              font-size: 12.5px;
-              color: #166534;
-              line-height: 1.5;
-            }
-
-            .decision-check {
-              color: #16a34a;
-              font-weight: bold;
-              font-size: 13px;
-              line-height: 1;
-              margin-top: 1px;
-            }
-
-            .decision-text strong {
-              color: #14532d;
-              font-weight: 700;
-            }
-
-            /* Action Items */
-            .action-items-list {
-              display: flex;
-              flex-direction: column;
-              gap: 8px;
-            }
-
-            .action-card {
-              display: flex;
-              align-items: center;
-              justify-content: space-between;
-              gap: 12px;
-              border: 1px solid #e2e8f0;
-              border-radius: 8px;
-              padding: 9px 12px;
-              background: #ffffff;
-              page-break-inside: avoid;
-              break-inside: avoid;
-            }
-
-            .action-card.completed {
-              background: #f8fafc;
-              border-color: #e2e8f0;
-            }
-
-            .action-main {
-              display: flex;
-              align-items: center;
-              gap: 10px;
-              min-width: 0;
-              flex: 1;
-            }
-
-            .action-box {
-              width: 16px;
-              height: 16px;
-              border-radius: 4px;
-              border: 1.5px solid #cbd5e1;
-              display: flex;
-              align-items: center;
-              justify-content: center;
-              shrink: 0;
-              background: #ffffff;
-            }
-
-            .action-box.completed {
-              border-color: #10b981;
-              background: #10b981;
-            }
-
-            .action-desc {
-              font-size: 12.5px;
-              font-weight: 600;
-              color: #0f172a;
-              line-height: 1.4;
-            }
-
-            .action-desc.completed {
-              text-decoration: line-through;
-              color: #94a3b8;
-            }
-
-            .action-badges {
-              display: flex;
-              align-items: center;
-              gap: 6px;
-              shrink: 0;
-            }
-
-            .assignee-badge {
-              font-size: 10.5px;
-              font-weight: 600;
-              color: #475569;
-              background: #f1f5f9;
-              border: 1px solid #e2e8f0;
-              padding: 2px 8px;
-              border-radius: 9999px;
-              white-space: nowrap;
-            }
-
-            .status-badge {
-              font-size: 10px;
-              font-weight: 700;
-              text-transform: uppercase;
-              letter-spacing: 0.3px;
-              padding: 2px 7px;
-              border-radius: 9999px;
-            }
-
-            .status-completed {
-              background: #dcfce7;
-              color: #15803d;
-            }
-
-            .status-pending {
-              background: #f8fafc;
-              border: 1px solid #e2e8f0;
-              color: #64748b;
-            }
-
-            /* Transcript Table/List */
-            .transcript-list {
-              display: flex;
-              flex-direction: column;
-              gap: 6px;
-            }
-
-            .transcript-row {
-              display: flex;
-              align-items: baseline;
-              gap: 12px;
-              padding: 4px 0;
-              border-bottom: 1px solid #f8fafc;
-              font-size: 11.5px;
-              line-height: 1.5;
-              page-break-inside: avoid;
-              break-inside: avoid;
-            }
-
-            .transcript-meta {
-              display: flex;
-              align-items: center;
-              gap: 6px;
-              min-width: 140px;
-              shrink: 0;
-            }
-
-            .timestamp-tag {
-              font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
-              font-size: 10px;
-              color: #64748b;
-              background: #f1f5f9;
-              padding: 1px 5px;
-              border-radius: 4px;
-            }
-
-            .speaker-label {
-              font-weight: 700;
-              color: #0f172a;
-              font-size: 11px;
-            }
-
-            .transcript-text {
-              color: #334155;
-              flex: 1;
-            }
-          </style>
-        </head>
-        <body>
-          <!-- Brand & Classification Header -->
-          <div class="report-brand-bar">
-            <div class="brand-group">
-              <div class="brand-logo-icon">M</div>
-              <span class="brand-name">MeetLog</span>
-              <span class="brand-divider">/</span>
-              <span class="brand-tag">Executive Intelligence Brief</span>
-            </div>
-            <div class="confidential-pill">Confidential · Team Internal</div>
-          </div>
-
-          <!-- Title & Context Grid -->
-          <div class="report-title-block">
-            <h1 class="report-title">${escapeHtml(meeting.title)}</h1>
-            <div class="report-meta-grid">
-              <div class="meta-item">📅 <strong>Date:</strong> <span>${formattedDate}</span></div>
-              <div class="meta-item">⏱️ <strong>Duration:</strong> <span>${formatDurationHuman(meeting.durationSeconds)}</span></div>
-              <div class="meta-item">🏢 <strong>Workspace:</strong> <span>${escapeHtml(workspaceName)}</span></div>
-              <div class="meta-item">👥 <strong>Action Items:</strong> <span>${actionItems.length} total</span></div>
-            </div>
-          </div>
-
-          ${summaryHtml}
-          ${actionsHtml}
-          ${transcriptHtml}
-
-          <script>
-            document.title = " ";
-            window.onload = function() {
-              setTimeout(() => {
-                window.print();
-              }, 120);
-            };
-          </script>
-        </body>
-      </html>
-    `);
-    printWin.document.close();
+    onClose();
   };
 
   return (
-    <Dialog open={isOpen} onOpenChange={(open) => !open && onClose()}>
-      <DialogContent className="max-w-xl bg-card border-border p-0 overflow-hidden shadow-2xl rounded-2xl">
-        
-        {}
-        <div className="p-6 border-b border-border bg-muted/30 flex items-center justify-between">
-          <div className="flex items-center gap-3">
-            <div className="size-10 rounded-xl bg-primary/10 border border-primary/20 text-primary flex items-center justify-center shadow-xs">
-              <Download className="size-5" />
+    <Dialog open={isOpen} onOpenChange={onClose}>
+      <DialogContent
+        onOpenAutoFocus={(e) => e.preventDefault()}
+        className="sm:max-w-[560px] p-0 overflow-hidden border-border bg-card"
+      >
+        <DialogHeader className="px-6 pt-6 pb-4 border-b border-border/70 bg-muted/20">
+          <div className="flex items-center gap-2.5">
+            <div className="size-9 rounded-xl bg-primary/10 border border-primary/20 flex items-center justify-center text-primary shrink-0 shadow-xs">
+              <FileText className="size-5" />
             </div>
             <div>
-              <DialogTitle className="text-lg font-extrabold text-foreground flex items-center gap-2">
-                <span>Multi-Format Export Hub</span>
+              <DialogTitle className="text-base sm:text-lg font-bold text-foreground">
+                Export Meeting Document
               </DialogTitle>
               <DialogDescription className="text-xs text-muted-foreground mt-0.5">
-                Export meeting intelligence to Notion, PDF reports, or subtitle files.
+                Download a structured document with full timestamped transcripts and final summary for AI MoM generation.
               </DialogDescription>
             </div>
           </div>
+        </DialogHeader>
+
+        <div className="p-6 space-y-5">
+          {/* File Name Input */}
+          <div className="space-y-1.5">
+            <div className="flex items-center justify-between">
+              <Label
+                htmlFor="fileName"
+                className={`text-xs font-semibold ${
+                  isFileNameEmpty ? "text-destructive" : "text-foreground"
+                }`}
+              >
+                File Name
+              </Label>
+              <span className="text-[11px] font-mono text-muted-foreground">
+                Extension: .{selectedFormat}
+              </span>
+            </div>
+            <div className="relative flex items-center">
+              <Input
+                id="fileName"
+                autoFocus={false}
+                value={fileName}
+                onChange={(e) => setFileName(e.target.value)}
+                placeholder="Enter file name..."
+                className={`h-10 text-sm font-medium pr-16 bg-background shadow-xs transition-colors ${
+                  isFileNameEmpty
+                    ? "border-destructive focus-visible:ring-destructive/50 ring-1 ring-destructive/30"
+                    : "border-border focus-visible:ring-1 focus-visible:ring-primary"
+                }`}
+              />
+              <span className="absolute right-3 text-xs font-mono font-bold text-muted-foreground uppercase pointer-events-none bg-muted px-1.5 py-0.5 rounded border border-border/50">
+                .{selectedFormat}
+              </span>
+            </div>
+            {isFileNameEmpty && (
+              <p className="text-[11px] font-medium text-destructive mt-1">
+                Please enter a file name before exporting.
+              </p>
+            )}
+          </div>
+
+          {/* Format Selector Tabs */}
+          <div className="space-y-2">
+            <Label className="text-xs font-semibold text-foreground">
+              Document Format
+            </Label>
+            <Tabs
+              value={selectedFormat}
+              onValueChange={(val) => setSelectedFormat(val as any)}
+              className="w-full"
+            >
+              <TabsList className="grid grid-cols-3 h-10 w-full bg-muted/50 p-1 rounded-lg border border-border/50">
+                <TabsTrigger
+                  value="doc"
+                  className="text-xs font-semibold flex items-center gap-1.5 cursor-pointer data-[state=active]:bg-card data-[state=active]:shadow-xs"
+                >
+                  <FileText className="size-3.5 text-blue-500" />
+                  <span>Word (.doc)</span>
+                </TabsTrigger>
+                <TabsTrigger
+                  value="pdf"
+                  className="text-xs font-semibold flex items-center gap-1.5 cursor-pointer data-[state=active]:bg-card data-[state=active]:shadow-xs"
+                >
+                  <FileText className="size-3.5 text-rose-500" />
+                  <span>PDF (.pdf)</span>
+                </TabsTrigger>
+                <TabsTrigger
+                  value="md"
+                  className="text-xs font-semibold flex items-center gap-1.5 cursor-pointer data-[state=active]:bg-card data-[state=active]:shadow-xs"
+                >
+                  <Sparkles className="size-3.5 text-purple-500" />
+                  <span>Markdown (.md)</span>
+                </TabsTrigger>
+              </TabsList>
+            </Tabs>
+          </div>
         </div>
 
-        <div className="p-6 space-y-4">
-
-          {}
-          <div className="p-4 rounded-xl border border-border bg-card shadow-2xs hover:border-primary/30 transition-all flex items-center justify-between gap-4">
-            <div className="flex items-center gap-3">
-              <div className="size-10 rounded-lg bg-purple-500/10 text-purple-500 flex items-center justify-center text-xl shrink-0">
-                📝
-              </div>
-              <div>
-                <h4 className="text-xs font-bold text-foreground">Notion & Markdown Document</h4>
-                <p className="text-[11px] text-muted-foreground mt-0.5">
-                  Copy formatted markdown ready to paste directly into Notion or docs.
-                </p>
-              </div>
-            </div>
-            <Button
-              size="sm"
-              variant="outline"
-              onClick={handleCopyNotionMarkdown}
-              className="h-9 text-xs font-bold gap-1.5 cursor-pointer shrink-0 rounded-xl"
-            >
-              {copiedNotion ? <Check className="size-3.5 text-emerald-500" /> : <Copy className="size-3.5" />}
-              <span>{copiedNotion ? "Copied!" : "Copy Notion Format"}</span>
-            </Button>
-          </div>
-
-          {}
-          <div className="p-4 rounded-xl border border-border bg-card shadow-2xs hover:border-primary/30 transition-all flex items-center justify-between gap-4">
-            <div className="flex items-center gap-3">
-              <div className="size-10 rounded-lg bg-emerald-500/10 text-emerald-500 flex items-center justify-center text-xl shrink-0">
-                📄
-              </div>
-              <div>
-                <h4 className="text-xs font-bold text-foreground">Printable PDF Report</h4>
-                <p className="text-[11px] text-muted-foreground mt-0.5">
-                  Generate executive A4 PDF report with summary and action checklist.
-                </p>
-              </div>
-            </div>
-            <Button
-              size="sm"
-              onClick={handlePrintPDF}
-              className="h-9 text-xs font-bold gap-1.5 cursor-pointer shrink-0 rounded-xl bg-primary hover:bg-primary/90 text-primary-foreground"
-            >
-              <Printer className="size-3.5" />
-              <span>Print PDF</span>
-            </Button>
-          </div>
-
-          {}
-          <div className="p-4 rounded-xl border border-border bg-card shadow-2xs hover:border-primary/30 transition-all flex items-center justify-between gap-4">
-            <div className="flex items-center gap-3">
-              <div className="size-10 rounded-lg bg-blue-500/10 text-blue-500 flex items-center justify-center text-xl shrink-0">
-                🎬
-              </div>
-              <div>
-                <h4 className="text-xs font-bold text-foreground">Subtitle SubRip & WebVTT Files</h4>
-                <p className="text-[11px] text-muted-foreground mt-0.5">
-                  Download timestamped .srt & .vtt files for video editors and media players.
-                </p>
-              </div>
-            </div>
-            <div className="flex items-center gap-2 shrink-0">
-              <Button
-                size="sm"
-                variant="outline"
-                onClick={handleDownloadSRT}
-                className="h-9 text-xs font-bold gap-1 cursor-pointer rounded-xl"
-              >
-                <FileCode className="size-3.5 text-primary" />
-                <span>.SRT</span>
-              </Button>
-              <Button
-                size="sm"
-                variant="outline"
-                onClick={handleDownloadVTT}
-                className="h-9 text-xs font-bold gap-1 cursor-pointer rounded-xl"
-              >
-                <FileCode className="size-3.5 text-purple-500" />
-                <span>.VTT</span>
-              </Button>
-            </div>
-          </div>
-
-        </div>
-
+        <DialogFooter className="px-6 py-4 border-t border-border/70 bg-muted/20 flex items-center justify-end gap-2">
+          <Button
+            type="button"
+            variant="outline"
+            size="sm"
+            onClick={onClose}
+            className="text-xs cursor-pointer border-border"
+          >
+            Cancel
+          </Button>
+          <Button
+            type="button"
+            size="sm"
+            onClick={handleDownload}
+            disabled={isFileNameEmpty || isGenerating}
+            className="text-xs font-semibold gap-1.5 cursor-pointer shadow-sm bg-primary text-primary-foreground hover:bg-primary/90 disabled:opacity-50 disabled:cursor-not-allowed"
+          >
+            {isGenerating ? (
+              <>
+                <Loader2 className="size-3.5 animate-spin" />
+                <span>Generating PDF...</span>
+              </>
+            ) : (
+              <>
+                <Download className="size-3.5" />
+                <span>Download .{selectedFormat.toUpperCase()}</span>
+              </>
+            )}
+          </Button>
+        </DialogFooter>
       </DialogContent>
     </Dialog>
   );
